@@ -32,6 +32,7 @@ ERROR_ALREADY_STARTED = "⚠️ Гра вже почалася!"
 
 # Buttons
 BTN_FORFEIT = "🏳️ Здатися"
+BTN_CANCEL = "🚫 Скасувати гру"
 BTN_NEW_GAME = "🆕 Нова гра"
 
 # Board Pieces (for text rendering)

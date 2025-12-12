@@ -189,28 +189,37 @@ class RatingSystem:
             "losses": loser["losses"] + 1
         }
     
-    async def get_leaderboard(self, limit: int = 10) -> List[dict]:
+    async def get_leaderboard(self, limit: int = 15, offset: int = 0) -> tuple[list, int]:
         """
-        Get top players by rating.
+        Get top players by rating with pagination.
         
         Args:
-            limit: Number of top players to return
+            limit: Number of players per page
+            offset: Number of players to skip
         
         Returns:
-            List of player dicts ordered by rating
+            Tuple of (list of player dicts, total count of players)
         """
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             
+            # Get total count
+            async with db.execute(
+                "SELECT COUNT(*) FROM players WHERE games_played > 0"
+            ) as cursor:
+                row = await cursor.fetchone()
+                total_count = row[0] if row else 0
+            
+            # Get paginated results
             async with db.execute(
                 """SELECT * FROM players 
                    WHERE games_played > 0
                    ORDER BY rating DESC 
-                   LIMIT ?""",
-                (limit,)
+                   LIMIT ? OFFSET ?""",
+                (limit, offset)
             ) as cursor:
                 rows = await cursor.fetchall()
-                return [dict(row) for row in rows]
+                return [dict(row) for row in rows], total_count
     
     async def get_player_rank(self, user_id: int) -> Optional[int]:
         """
@@ -230,3 +239,21 @@ class RatingSystem:
             ) as cursor:
                 row = await cursor.fetchone()
                 return row[0] if row else None
+    
+    async def reset_all_rankings(self) -> int:
+        """
+        Reset all player rankings (delete all data).
+        
+        Returns:
+            Number of players deleted
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT COUNT(*) FROM players") as cursor:
+                row = await cursor.fetchone()
+                count = row[0] if row else 0
+            
+            await db.execute("DELETE FROM players")
+            await db.commit()
+            
+            logger.warning(f"All rankings reset! Deleted {count} player records.")
+            return count

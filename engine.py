@@ -32,6 +32,7 @@ class CheckersEngine:
     def __init__(self):
         self.board: List[int] = self.init_board()
         self.current_turn = RED  # RED starts (top of board)
+        self.move_count = 0  # Track total moves made
     
     @staticmethod
     def init_board() -> List[int]:
@@ -359,6 +360,7 @@ class CheckersEngine:
         
         # Switch turn
         self.current_turn = RED if self.current_turn == WHITE else WHITE
+        self.move_count += 1
         
         return True
     
@@ -394,10 +396,12 @@ class CheckersEngine:
         """Get serializable game state."""
         return {
             "board": self.board.copy(),
-            "current_turn": self.current_turn
+            "current_turn": self.current_turn,
+            "move_count": self.move_count
         }
     
     def set_board_state(self, state: dict):
         """Restore game state from serialized data."""
         self.board = state["board"].copy()
         self.current_turn = state["current_turn"]
+        self.move_count = state.get("move_count", 0)

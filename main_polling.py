@@ -88,6 +88,7 @@ def main():
     application.add_handler(CommandHandler("checkersplay", handlers.start_command))
     application.add_handler(CommandHandler("myrating", handlers.myrating_command))
     application.add_handler(CommandHandler("ratings", handlers.ratings_command))
+    application.add_handler(CommandHandler("resetrankings", handlers.reset_rankings_command))  # Hidden admin command
     
     # Register callback handlers
     application.add_handler(CallbackQueryHandler(handlers.join_callback, pattern="^join$"))
@@ -97,6 +98,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handlers.forfeit_callback, pattern="^forfeit$"))
     application.add_handler(CallbackQueryHandler(handlers.new_game_callback, pattern="^new_game$"))
     application.add_handler(CallbackQueryHandler(handlers.noop_callback, pattern="^noop_"))
+    application.add_handler(CallbackQueryHandler(handlers.ratings_page_callback, pattern="^ratings_page_"))
     
     # Start POLLING mode (no webhook needed)
     logger.info("Starting bot in POLLING mode...")

@@ -2,6 +2,7 @@
 Telegram bot handlers for Ukrainian Checkers game.
 """
 
+import os
 from datetime import datetime
 from typing import Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -50,7 +51,7 @@ class BoardRenderer:
         return "\n".join(lines)
     
     @staticmethod
-    def create_move_keyboard(engine: CheckersEngine, selected_pos: Optional[int] = None) -> InlineKeyboardMarkup:
+    def create_move_keyboard(engine: CheckersEngine, selected_pos: Optional[int] = None, move_count: int = 1) -> InlineKeyboardMarkup:
         """
         Create inline keyboard showing the actual board as clickable buttons.
         
@@ -85,11 +86,8 @@ class BoardRenderer:
                 elif pos in selected_destinations:
                     # Possible destination - show target
                     label = "🎯"
-                elif pos in movable_positions and selected_pos is None:
-                    # Piece that can move - show with green circle
-                    label = "🟢" + BoardRenderer._get_piece_emoji(piece)
                 elif piece != 0:
-                    # Regular piece
+                    # Regular piece (clickable or not)
                     label = BoardRenderer._get_piece_emoji(piece)
                 else:
                     # Empty square - just a space
@@ -114,7 +112,13 @@ class BoardRenderer:
         control_buttons = []
         if selected_pos is not None:
             control_buttons.append(InlineKeyboardButton("« Скасувати", callback_data="back"))
-        control_buttons.append(InlineKeyboardButton(locales.BTN_FORFEIT, callback_data="forfeit"))
+            
+        # Specific button based on game stage
+        if move_count == 0:
+            control_buttons.append(InlineKeyboardButton(locales.BTN_CANCEL, callback_data="forfeit"))
+        else:
+            control_buttons.append(InlineKeyboardButton(locales.BTN_FORFEIT, callback_data="forfeit"))
+            
         buttons.append(control_buttons)
         
         return InlineKeyboardMarkup(buttons)
@@ -145,6 +149,35 @@ class GameHandlers:
         user = update.effective_user
         chat = update.effective_chat
         
+        # Private chat requires opponent specification
+        if chat.type == "private":
+            # Check if opponent is specified
+            if not context.args:
+                await update.message.reply_text(
+                    "🎮 Щоб запросити гравця в особистому чаті:\n\n"
+                    "`/checkersplay @username`\n\n"
+                    "Або використовуйте команду в груповому чаті.",
+                    parse_mode="Markdown"
+                )
+                return
+            
+            # Try to get opponent info from args
+            opponent_arg = context.args[0]
+            
+            # Remove @ if present
+            if opponent_arg.startswith("@"):
+                opponent_arg = opponent_arg[1:]
+            
+            # Store invite info - opponent will need to accept via /acceptgame
+            await update.message.reply_text(
+                f"⚠️ Запрошення в особистих чатах поки не підтримуються.\n\n"
+                f"Використовуйте команду /checkersplay в груповому чаті, "
+                f"де присутній ваш суперник.",
+                parse_mode="Markdown"
+            )
+            return
+        
+        # Group chat flow - normal challenge
         # Send welcome message
         await update.message.reply_text(locales.WELCOME)
         
@@ -239,14 +272,15 @@ class GameHandlers:
         engine = CheckersEngine()
         engine.set_board_state({
             "board": game_state["board"],
-            "current_turn": game_state["current_turn"]
+            "current_turn": game_state["current_turn"],
+            "move_count": game_state.get("move_count", 0)
         })
         
         # Show available moves
         board_text = BoardRenderer.render(engine.board)
         turn_msg = self._get_turn_message(game_state)
         
-        keyboard = BoardRenderer.create_move_keyboard(engine, selected_pos)
+        keyboard = BoardRenderer.create_move_keyboard(engine, selected_pos, engine.move_count)
         
         await query.edit_message_text(
             f"{board_text}\n\n{turn_msg}\n\n✅ Обрано: позиція {selected_pos}",
@@ -276,7 +310,8 @@ class GameHandlers:
         engine = CheckersEngine()
         engine.set_board_state({
             "board": game_state["board"],
-            "current_turn": game_state["current_turn"]
+            "current_turn": game_state["current_turn"],
+            "move_count": game_state.get("move_count", 0)
         })
         
         # Find and apply the move
@@ -340,6 +375,7 @@ class GameHandlers:
             # Update game state
             game_state["board"] = engine.board
             game_state["current_turn"] = engine.current_turn
+            game_state["move_count"] = engine.move_count
             self.repo.save_game(chat_id, message_id, game_state)
             
             # Show updated board
@@ -363,14 +399,15 @@ class GameHandlers:
         engine = CheckersEngine()
         engine.set_board_state({
             "board": game_state["board"],
-            "current_turn": game_state["current_turn"]
+            "current_turn": game_state["current_turn"],
+            "move_count": game_state.get("move_count", 0)
         })
         
         # Show board with piece selection
         await self._update_game_message(query.message, engine, game_state)
     
     async def forfeit_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle forfeit button."""
+        """Handle forfeit/cancel button."""
         query = update.callback_query
         await query.answer()
         
@@ -385,6 +422,40 @@ class GameHandlers:
         
         user_id = query.from_user.id
         
+        # Verify user is actually a player in this game
+        if user_id != game_state["red_player_id"] and user_id != game_state["white_player_id"]:
+            await query.answer("❌ Ви не є гравцем у цій грі!", show_alert=True)
+            return
+        
+        move_count = game_state.get("move_count", 0)
+        
+        # Check if cancelling (no moves yet) or forfeiting
+        if move_count == 0:
+            # Game Cancelled - NO RATING CHANGE
+            win_msg = "🚫 Гра скасована. Рейтинг не змінено."
+            
+            # Restore engine for display
+            engine = CheckersEngine()
+            engine.set_board_state({
+                "board": game_state["board"],
+                "current_turn": game_state["current_turn"],
+                "move_count": move_count
+            })
+            board_text = BoardRenderer.render(engine.board)
+            
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton(locales.BTN_NEW_GAME, callback_data="new_game")
+            ]])
+            
+            await query.edit_message_text(
+                f"{board_text}\n\n{win_msg}",
+                reply_markup=keyboard
+            )
+            
+            # Delete game
+            self.repo.delete_game(chat_id, message_id)
+            return
+
         # Determine winner (opponent of forfeiting player)
         if user_id == game_state["red_player_id"]:
             winner_id = game_state["white_player_id"]
@@ -401,7 +472,8 @@ class GameHandlers:
         engine = CheckersEngine()
         engine.set_board_state({
             "board": game_state["board"],
-            "current_turn": game_state["current_turn"]
+            "current_turn": game_state["current_turn"],
+            "move_count": move_count
         })
         
         board_text = BoardRenderer.render(engine.board)
@@ -433,11 +505,45 @@ class GameHandlers:
         query = update.callback_query
         await query.answer("Використайте /checkersplay для нової гри")
     
+    async def reset_rankings_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Hidden admin command to reset all rankings. Only works in private chat for admin."""
+        user = update.effective_user
+        chat = update.effective_chat
+        
+        # Check if private chat
+        if chat.type != "private":
+            return  # Silently ignore in group chats
+        
+        # Check if admin
+        admin_id_str = os.getenv("ADMIN_ID", "")
+        if not admin_id_str:
+            return  # No admin configured
+        
+        try:
+            admin_id = int(admin_id_str)
+        except ValueError:
+            return  # Invalid admin ID
+        
+        if user.id != admin_id:
+            return  # Not admin, silently ignore
+        
+        # Admin confirmed - reset rankings
+        if not self.rating_system:
+            await update.message.reply_text("❌ Система рейтингу не налаштована.")
+            return
+        
+        count = await self.rating_system.reset_all_rankings()
+        await update.message.reply_text(
+            f"✅ Рейтинги скинуто!\n\n"
+            f"🗑️ Видалено записів: {count}\n"
+            f"📊 Всі гравці почнуть з {1200} ELO."
+        )
+    
     async def _update_game_message(self, message, engine: CheckersEngine, game_state: dict):
         """Update game message with current board and turn info."""
         board_text = BoardRenderer.render(engine.board)
         turn_msg = self._get_turn_message(game_state)
-        keyboard = BoardRenderer.create_move_keyboard(engine)
+        keyboard = BoardRenderer.create_move_keyboard(engine, move_count=engine.move_count)
         
         await message.edit_text(
             f"{board_text}\n\n{turn_msg}",
@@ -489,28 +595,73 @@ class GameHandlers:
         await update.message.reply_text(message)
     
     async def ratings_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /ratings command - show leaderboard."""
+        """Handle /ratings command - show leaderboard with pagination."""
         if not self.rating_system:
             await update.message.reply_text("Система рейтингу недоступна.")
             return
         
-        leaderboard = await self.rating_system.get_leaderboard(limit=10)
+        await self._send_leaderboard(update.message, page=0)
+    
+    async def ratings_page_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle leaderboard page navigation."""
+        query = update.callback_query
+        await query.answer()
         
-        if not leaderboard:
-            await update.message.reply_text("Ще немає рейтингу. Зіграйте першу гру!")
+        if not self.rating_system:
             return
         
-        message = locales.LEADERBOARD_TITLE.format(count=len(leaderboard))
+        # Parse page number from callback data: ratings_page_N
+        _, _, page_str = query.data.split("_")
+        page = int(page_str)
         
-        for idx, player in enumerate(leaderboard, 1):
-            entry = locales.LEADERBOARD_ENTRY.format(
-                rank=idx,
-                name=player["username"],
-                rating=player["rating"],
-                wins=player["wins"],
-                losses=player["losses"]
-            )
-            message += entry + "\n"
+        await self._send_leaderboard(query.message, page=page, edit=True)
+    
+    async def _send_leaderboard(self, message, page: int = 0, edit: bool = False):
+        """Send or edit leaderboard message with pagination."""
+        PLAYERS_PER_PAGE = 15
+        offset = page * PLAYERS_PER_PAGE
         
-        await update.message.reply_text(message)
+        leaderboard, total_count = await self.rating_system.get_leaderboard(
+            limit=PLAYERS_PER_PAGE, offset=offset
+        )
+        
+        if not leaderboard and page == 0:
+            text = "Ще немає рейтингу. Зіграйте першу гру!"
+            if edit:
+                await message.edit_text(text)
+            else:
+                await message.reply_text(text)
+            return
+        
+        total_pages = (total_count + PLAYERS_PER_PAGE - 1) // PLAYERS_PER_PAGE
+        
+        # Build message
+        text = f"🏆 **Таблиця лідерів** (стор. {page + 1}/{total_pages})\n\n"
+        
+        for idx, player in enumerate(leaderboard, start=offset + 1):
+            # Medal for top 3
+            if idx == 1:
+                medal = "🥇"
+            elif idx == 2:
+                medal = "🥈"
+            elif idx == 3:
+                medal = "🥉"
+            else:
+                medal = f"{idx}."
+            
+            text += f"{medal} {player['username']} — {player['rating']} ELO ({player['wins']}W/{player['losses']}L)\n"
+        
+        # Navigation buttons
+        buttons = []
+        if page > 0:
+            buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"ratings_page_{page - 1}"))
+        if page < total_pages - 1:
+            buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"ratings_page_{page + 1}"))
+        
+        keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
+        
+        if edit:
+            await message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+        else:
+            await message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
 
