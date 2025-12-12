@@ -1,0 +1,32 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Containerfile
+    env_file:
+      - .env
+    ports:
+      - "8787:8787"
+    depends_on:
+      - redis
+    restart: always
+    networks:
+      - checkers_network
+    volumes:
+      - /mnt/ssd1/checkers_data:/data # SSD storage: ratings.db persisted here
+
+  redis:
+    image: redis:alpine
+    restart: always
+    volumes:
+      - redis_data:/data
+    networks:
+      - checkers_network
+
+volumes:
+  redis_data:
+
+
+networks:
+  checkers_network:
+    driver: bridge
