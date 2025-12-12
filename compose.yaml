@@ -16,7 +16,7 @@ services:
       - /mnt/ssd1/checkers_data:/data # SSD storage: ratings.db persisted here
 
   redis:
-    image: redis:alpine
+    image: docker.io/redis:alpine # Fully qualified for Podman
     restart: always
     volumes:
       - redis_data:/data
