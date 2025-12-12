@@ -52,54 +52,85 @@ class BoardRenderer:
     @staticmethod
     def create_move_keyboard(engine: CheckersEngine, selected_pos: Optional[int] = None) -> InlineKeyboardMarkup:
         """
-        Create inline keyboard for piece selection and moves.
+        Create inline keyboard showing the actual board as clickable buttons.
         
-        If selected_pos is None: show all pieces of current player
-        If selected_pos is set: show legal moves from that position
+        If selected_pos is None: highlight pieces that can move (green)
+        If selected_pos is set: highlight selected piece and show possible destinations
         """
         buttons = []
         
-        if selected_pos is None:
-            # Show all pieces that can move
-            legal_moves = engine.get_legal_moves(engine.current_turn)
-            movable_positions = set(move.from_pos for move in legal_moves)
-            
-            row_buttons = []
-            for pos in sorted(movable_positions):
-                row, col = engine.pos_to_coords(pos)
-                label = f"{chr(65+col)}{8-row}"  # e.g., "A3"
-                row_buttons.append(InlineKeyboardButton(label, callback_data=f"select_{pos}"))
-                
-                if len(row_buttons) == 4:  # 4 buttons per row
-                    buttons.append(row_buttons)
-                    row_buttons = []
-            
-            if row_buttons:
-                buttons.append(row_buttons)
-        else:
-            # Show legal moves from selected position
-            legal_moves = [m for m in engine.get_legal_moves(engine.current_turn) if m.from_pos == selected_pos]
-            
-            row_buttons = []
-            for move in legal_moves:
-                to_row, to_col = engine.pos_to_coords(move.to_pos)
-                label = f"→ {chr(65+to_col)}{8-to_row}"
-                row_buttons.append(InlineKeyboardButton(label, callback_data=f"move_{selected_pos}_{move.to_pos}"))
-                
-                if len(row_buttons) == 4:
-                    buttons.append(row_buttons)
-                    row_buttons = []
-            
-            if row_buttons:
-                buttons.append(row_buttons)
-            
-            # Add back button
-            buttons.append([InlineKeyboardButton("« Назад", callback_data="back")])
+        # Get legal moves for highlighting
+        legal_moves = engine.get_legal_moves(engine.current_turn)
+        movable_positions = set(move.from_pos for move in legal_moves)
         
-        # Add forfeit button
-        buttons.append([InlineKeyboardButton(locales.BTN_FORFEIT, callback_data="forfeit")])
+        # If a piece is selected, get its possible moves
+        selected_destinations = set()
+        if selected_pos is not None:
+            for move in legal_moves:
+                if move.from_pos == selected_pos:
+                    selected_destinations.add(move.to_pos)
+        
+        # Create 8x8 board keyboard
+        for row in range(8):
+            row_buttons = []
+            for col in range(8):
+                pos = row * 8 + col
+                piece = engine.board[pos]
+                is_dark = (row + col) % 2 == 1
+                
+                # Determine button label
+                if pos == selected_pos:
+                    # Selected piece - show with highlight
+                    label = "✅" + BoardRenderer._get_piece_emoji(piece)
+                elif pos in selected_destinations:
+                    # Possible destination - show target
+                    label = "🎯"
+                elif pos in movable_positions and selected_pos is None:
+                    # Piece that can move - show with green circle
+                    label = "🟢" + BoardRenderer._get_piece_emoji(piece)
+                elif piece != 0:
+                    # Regular piece
+                    label = BoardRenderer._get_piece_emoji(piece)
+                else:
+                    # Empty square - just a space
+                    label = " "
+                
+                # Determine callback data
+                if selected_pos is None and pos in movable_positions:
+                    # Clickable piece to select
+                    callback = f"select_{pos}"
+                elif selected_pos is not None and pos in selected_destinations:
+                    # Clickable destination
+                    callback = f"move_{selected_pos}_{pos}"
+                else:
+                    # Non-clickable square
+                    callback = f"noop_{pos}"
+                
+                row_buttons.append(InlineKeyboardButton(label, callback_data=callback))
+            
+            buttons.append(row_buttons)
+        
+        # Add control buttons
+        control_buttons = []
+        if selected_pos is not None:
+            control_buttons.append(InlineKeyboardButton("« Скасувати", callback_data="back"))
+        control_buttons.append(InlineKeyboardButton(locales.BTN_FORFEIT, callback_data="forfeit"))
+        buttons.append(control_buttons)
         
         return InlineKeyboardMarkup(buttons)
+    
+    @staticmethod
+    def _get_piece_emoji(piece: int) -> str:
+        """Get emoji for a piece."""
+        if piece == 1:  # White man
+            return "⚪"
+        elif piece == 2:  # White king
+            return "🤍"  # White heart
+        elif piece == 3:  # Red man
+            return "🔴"
+        elif piece == 4:  # Red king
+            return "❤️"  # Red heart
+        return ""
 
 
 class GameHandlers:
@@ -424,6 +455,12 @@ class GameHandlers:
         else:
             name = game_state["white_player_name"]
             return locales.TURN_WHITE.format(name=name)
+    
+    async def noop_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle noop (no-operation) callbacks from non-interactive squares."""
+        query = update.callback_query
+        # Just answer the callback without doing anything
+        await query.answer()
     
     async def myrating_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /myrating command - show user's rating."""

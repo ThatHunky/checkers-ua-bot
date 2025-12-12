@@ -10,8 +10,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 # ELO Constants
-INITIAL_RATING = 1200
-K_FACTOR = 32  # Standard K-factor for chess
+INITIAL_RATING = 1200  # Standard starting rating for beginners
+K_FACTOR = 32  # Higher K-factor for casual play (makes rating changes more responsive)
 
 
 class RatingSystem:
@@ -88,25 +88,28 @@ class RatingSystem:
         winner_rating: int,
         loser_rating: int,
         k_factor: int = K_FACTOR
-    ) -> Tuple[int, int]:
+    ) -> tuple[int, int]:
         """
-        Calculate ELO rating changes for a game.
+        Calculate ELO rating changes for a game using standard formula.
+        
+        Formula: R_new = R_old + K × (Actual - Expected)
         
         Args:
             winner_rating: Current rating of winner
             loser_rating: Current rating of loser
-            k_factor: K-factor (higher = more volatile changes)
+            k_factor: K-factor (higher = more volatile, default 32 for casual play)
         
         Returns:
             Tuple of (winner_new_rating, loser_new_rating)
         """
-        # Expected scores
+        # Calculate expected scores (probability of winning)
         expected_winner = 1 / (1 + 10 ** ((loser_rating - winner_rating) / 400))
         expected_loser = 1 / (1 + 10 ** ((winner_rating - loser_rating) / 400))
         
-        # Actual scores (1 for win, 0 for loss)
-        winner_change = round(k_factor * (1 - expected_winner))
-        loser_change = round(k_factor * (0 - expected_loser))
+        # Actual scores: 1.0 for win, 0.0 for loss
+        # Rating change = K × (Actual - Expected)
+        winner_change = round(k_factor * (1.0 - expected_winner))
+        loser_change = round(k_factor * (0.0 - expected_loser))
         
         new_winner_rating = winner_rating + winner_change
         new_loser_rating = loser_rating + loser_change

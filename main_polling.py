@@ -1,5 +1,6 @@
 """
-Ukrainian Checkers Telegram Bot - Main Entry Point
+Ukrainian Checkers Telegram Bot - Main Entry Point (POLLING MODE)
+Temporary version using polling instead of webhooks for testing.
 """
 
 import os
@@ -23,8 +24,6 @@ load_dotenv()
 # Configuration
 TOKEN = os.getenv("TOKEN")
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
-PORT = int(os.getenv("PORT", "8787"))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://checkers.dobrovolskyi.xyz")
 DB_PATH = os.getenv("DB_PATH", "/data/ratings.db")
 
 # Logging
@@ -36,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 
 async def post_init(application: Application):
-    """Post-initialization callback to set webhook, commands, and initialize rating system."""
+    """Post-initialization callback to set commands and initialize rating system."""
     # Initialize rating system
     logger.info(f"Initializing rating system: {DB_PATH}")
     rating_system = RatingSystem(DB_PATH)
@@ -54,17 +53,10 @@ async def post_init(application: Application):
     ]
     await application.bot.set_my_commands(commands)
     logger.info("Command hints set successfully")
-    
-    # Set webhook
-    logger.info(f"Setting webhook: {WEBHOOK_URL}/{TOKEN}")
-    await application.bot.set_webhook(
-        url=f"{WEBHOOK_URL}/{TOKEN}",
-        allowed_updates=Update.ALL_TYPES
-    )
 
 
 def main():
-    """Start the bot."""
+    """Start the bot in polling mode."""
     # Validate configuration
     if not TOKEN:
         raise ValueError("TOKEN environment variable not set!")
@@ -78,7 +70,7 @@ def main():
     
     logger.info("Redis connection successful")
     
-    # Initialize rating system (sync creation, async init in post_startup)
+    # Create rating system instance (initialized in post_init)
     rating_system = RatingSystem(DB_PATH)
     
     # Initialize handlers
@@ -104,18 +96,14 @@ def main():
     application.add_handler(CallbackQueryHandler(handlers.back_callback, pattern="^back$"))
     application.add_handler(CallbackQueryHandler(handlers.forfeit_callback, pattern="^forfeit$"))
     application.add_handler(CallbackQueryHandler(handlers.new_game_callback, pattern="^new_game$"))
+    application.add_handler(CallbackQueryHandler(handlers.noop_callback, pattern="^noop_"))
     
-    # Start webhook
-    logger.info(f"Starting webhook on 0.0.0.0:{PORT}")
-    logger.info(f"Webhook URL: {WEBHOOK_URL}/{TOKEN}")
+    # Start POLLING mode (no webhook needed)
+    logger.info("Starting bot in POLLING mode...")
+    logger.info("Bot is ready! Send /checkersplay to start a game.")
     
-    # run_webhook manages its own event loop
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=TOKEN,
-        webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
-    )
+    # Drop pending updates from before bot started to avoid spam
+    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 if __name__ == "__main__":
