@@ -88,3 +88,28 @@ class GameRepository:
         except Exception as e:
             print(f"Redis connection error: {e}")
             return False
+    
+    def get_all_games(self) -> list:
+        """
+        Get all active game states.
+        
+        Returns:
+            List of tuples: (chat_id, message_id, game_state)
+        """
+        games = []
+        try:
+            # Scan for all game keys
+            for key in self.redis_client.scan_iter("checkers:game:*"):
+                value = self.redis_client.get(key)
+                if value:
+                    # Parse key: checkers:game:{chat_id}:{message_id}
+                    parts = key.split(":")
+                    if len(parts) == 4:
+                        chat_id = int(parts[2])
+                        message_id = int(parts[3])
+                        game_state = json.loads(value)
+                        games.append((chat_id, message_id, game_state))
+        except Exception as e:
+            print(f"Error getting all games: {e}")
+        return games
+

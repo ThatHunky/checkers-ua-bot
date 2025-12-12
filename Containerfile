@@ -9,5 +9,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Run the bot (polling mode for now)
-CMD ["python", "main_polling.py"]
+# Run the bot (mode controlled by USE_WEBHOOK env var)
+CMD ["python", "main.py"]

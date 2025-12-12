@@ -92,6 +92,7 @@ def main():
     
     # Register callback handlers
     application.add_handler(CallbackQueryHandler(handlers.join_callback, pattern="^join$"))
+    application.add_handler(CallbackQueryHandler(handlers.cancel_invite_callback, pattern="^cancel_invite$"))
     application.add_handler(CallbackQueryHandler(handlers.select_callback, pattern="^select_"))
     application.add_handler(CallbackQueryHandler(handlers.move_callback, pattern="^move_"))
     application.add_handler(CallbackQueryHandler(handlers.back_callback, pattern="^back$"))

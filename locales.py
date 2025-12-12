@@ -4,7 +4,7 @@ Ukrainian localization strings for the Checkers bot.
 
 # Welcome and Challenge
 WELCOME = "👋 Вітаю! Хочете зіграти в Шашки?"
-CHALLENGE = "🔴 **Виклик!**\n\n{opponent} викликає на партію в Шашки!\nХто зіграє за Білих (⚪)?"
+CHALLENGE = "🔴 <b>Виклик!</b>\n\n{opponent} викликає на партію в Шашки!\nХто зіграє за Білих (⚪)?"
 JOIN_BTN = "⚔️ До бою!"
 
 # Game Status

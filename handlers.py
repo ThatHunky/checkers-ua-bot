@@ -155,9 +155,9 @@ class GameHandlers:
             if not context.args:
                 await update.message.reply_text(
                     "🎮 Щоб запросити гравця в особистому чаті:\n\n"
-                    "`/checkersplay @username`\n\n"
+                    "<code>/checkersplay @username</code>\n\n"
                     "Або використовуйте команду в груповому чаті.",
-                    parse_mode="Markdown"
+                    parse_mode="HTML"
                 )
                 return
             
@@ -170,10 +170,9 @@ class GameHandlers:
             
             # Store invite info - opponent will need to accept via /acceptgame
             await update.message.reply_text(
-                f"⚠️ Запрошення в особистих чатах поки не підтримуються.\n\n"
-                f"Використовуйте команду /checkersplay в груповому чаті, "
-                f"де присутній ваш суперник.",
-                parse_mode="Markdown"
+                "⚠️ Запрошення в особистих чатах поки не підтримуються.\n\n"
+                "Використовуйте команду /checkersplay в груповому чаті, "
+                "де присутній ваш суперник."
             )
             return
         
@@ -184,7 +183,8 @@ class GameHandlers:
         # Create challenge message
         challenge_text = locales.CHALLENGE.format(opponent=user.mention_html())
         keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton(locales.JOIN_BTN, callback_data="join")
+            InlineKeyboardButton(locales.JOIN_BTN, callback_data="join"),
+            InlineKeyboardButton("🚫 Скасувати", callback_data="cancel_invite")
         ]])
         
         message = await update.message.reply_html(challenge_text, reply_markup=keyboard)
@@ -219,6 +219,7 @@ class GameHandlers:
         
         # Initialize game
         engine = CheckersEngine()
+        now = datetime.utcnow().isoformat()
         game_state = {
             "board": engine.board,
             "current_turn": engine.current_turn,
@@ -226,7 +227,8 @@ class GameHandlers:
             "red_player_name": challenge_info["red_player_name"],
             "white_player_id": user.id,
             "white_player_name": user.first_name,
-            "created_at": datetime.utcnow().isoformat()
+            "created_at": now,
+            "last_activity": now
         }
         
         # Save to Redis
@@ -237,6 +239,33 @@ class GameHandlers:
         
         # Show game board
         await self._update_game_message(query.message, engine, game_state)
+    
+    async def cancel_invite_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle cancel invitation button - only challenger can cancel."""
+        query = update.callback_query
+        
+        user = query.from_user
+        message_id = query.message.message_id
+        
+        # Get challenge info
+        challenge_key = f"challenge_{message_id}"
+        challenge_info = context.chat_data.get(challenge_key)
+        
+        if not challenge_info:
+            await query.answer("❌ Запрошення вже недійсне.", show_alert=True)
+            return
+        
+        # Only the challenger can cancel
+        if user.id != challenge_info["red_player_id"]:
+            await query.answer("❌ Тільки автор запрошення може його скасувати!", show_alert=True)
+            return
+        
+        # Delete challenge data
+        del context.chat_data[challenge_key]
+        
+        # Update message
+        await query.answer("Запрошення скасовано")
+        await query.edit_message_text("🚫 Запрошення на гру скасовано.")
     
     async def select_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle piece selection."""
@@ -282,10 +311,13 @@ class GameHandlers:
         
         keyboard = BoardRenderer.create_move_keyboard(engine, selected_pos, engine.move_count)
         
-        await query.edit_message_text(
-            f"{board_text}\n\n{turn_msg}\n\n✅ Обрано: позиція {selected_pos}",
-            reply_markup=keyboard
-        )
+        try:
+            await query.edit_message_text(
+                f"{board_text}\n\n{turn_msg}\n\n✅ Обрано: позиція {selected_pos}",
+                reply_markup=keyboard
+            )
+        except Exception:
+            pass  # Ignore "Message is not modified" errors
     
     async def move_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle move execution."""
@@ -376,6 +408,7 @@ class GameHandlers:
             game_state["board"] = engine.board
             game_state["current_turn"] = engine.current_turn
             game_state["move_count"] = engine.move_count
+            game_state["last_activity"] = datetime.utcnow().isoformat()
             self.repo.save_game(chat_id, message_id, game_state)
             
             # Show updated board
@@ -636,7 +669,7 @@ class GameHandlers:
         total_pages = (total_count + PLAYERS_PER_PAGE - 1) // PLAYERS_PER_PAGE
         
         # Build message
-        text = f"🏆 **Таблиця лідерів** (стор. {page + 1}/{total_pages})\n\n"
+        text = f"🏆 <b>Таблиця лідерів</b> (стор. {page + 1}/{total_pages})\n\n"
         
         for idx, player in enumerate(leaderboard, start=offset + 1):
             # Medal for top 3
@@ -661,7 +694,7 @@ class GameHandlers:
         keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
         
         if edit:
-            await message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+            await message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
         else:
-            await message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
+            await message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
 

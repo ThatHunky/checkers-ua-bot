@@ -85,23 +85,22 @@ class CheckersEngine:
         Get all legal moves for the given color.
         Enforces mandatory capture rule.
         """
-        captures = []
-        normal_moves = []
+        all_captures = []
+        all_normal_moves = []
         
         for pos in range(64):
             piece = self.board[pos]
             if self.get_piece_color(piece) == color:
                 # Check for captures first
                 piece_captures = self._get_captures_from_pos(pos)
-                captures.extend(piece_captures)
+                all_captures.extend(piece_captures)
                 
-                # Only generate normal moves if no captures available
-                if not captures:
-                    piece_moves = self._get_normal_moves_from_pos(pos)
-                    normal_moves.extend(piece_moves)
+                # Also get normal moves (we'll only use them if no captures exist)
+                piece_moves = self._get_normal_moves_from_pos(pos)
+                all_normal_moves.extend(piece_moves)
         
         # Mandatory capture: return captures if any exist
-        return captures if captures else normal_moves
+        return all_captures if all_captures else all_normal_moves
     
     def _get_normal_moves_from_pos(self, pos: int) -> List[Move]:
         """Get non-capturing moves from a position."""
@@ -168,58 +167,62 @@ class CheckersEngine:
         if piece == EMPTY:
             return []
         
-        # Start recursive capture search
+        # Find all capture sequences
         captures = []
-        self._find_captures_recursive(pos, piece, [], set(), captures)
+        self._find_captures_recursive(
+            start_pos=pos,
+            current_pos=pos,
+            piece=piece,
+            captured_so_far=[],
+            all_captures=captures
+        )
         return captures
     
     def _find_captures_recursive(
         self,
-        pos: int,
+        start_pos: int,
+        current_pos: int,
         piece: int,
         captured_so_far: List[int],
-        visited: Set[int],
         all_captures: List[Move]
     ):
         """
         Recursively find all possible capture sequences.
         Handles multi-captures and instant promotion during jumps.
         """
-        row, col = self.pos_to_coords(pos)
+        row, col = self.pos_to_coords(current_pos)
         found_capture = False
         current_color = self.get_piece_color(piece)
         
         if self.is_king(piece):
             # Kings can jump any distance
             found_capture = self._find_king_captures(
-                pos, row, col, piece, current_color, captured_so_far, visited, all_captures
+                start_pos, current_pos, row, col, piece, current_color, captured_so_far, all_captures
             )
         else:
             # Men capture in all 4 diagonal directions (forward AND backward)
             found_capture = self._find_man_captures(
-                pos, row, col, piece, current_color, captured_so_far, visited, all_captures
+                start_pos, current_pos, row, col, piece, current_color, captured_so_far, all_captures
             )
         
         # If no further captures, record this capture sequence
         if not found_capture and captured_so_far:
             all_captures.append(Move(
-                from_pos=visited.pop() if visited else pos,
-                to_pos=pos,
+                from_pos=start_pos,
+                to_pos=current_pos,
                 captures=captured_so_far.copy(),
                 promotes=False
             ))
-            if visited:
-                visited.add(visited.pop())  # Restore
     
     def _find_man_captures(
         self,
-        pos: int,
+        start_pos: int,
+        current_pos: int,
         row: int,
         col: int,
         piece: int,
         current_color: int,
         captured_so_far: List[int],
-        visited: Set[int],
         all_captures: List[Move]
     ) -> bool:
         """Find captures for a man (can capture forward AND backward)."""
@@ -250,8 +253,6 @@ class CheckersEngine:
                 
                 # Make temporary move
                 new_captured = captured_so_far + [enemy_pos]
-                if not visited:
-                    visited.add(pos)
                 
                 # Check for instant promotion
                 new_piece = piece
@@ -260,20 +261,20 @@ class CheckersEngine:
                 
                 # Continue searching from landing position
                 self._find_captures_recursive(
-                    land_pos, new_piece, new_captured, visited, all_captures
+                    start_pos, land_pos, new_piece, new_captured, all_captures
                 )
         
         return found_capture
     
     def _find_king_captures(
         self,
-        pos: int,
+        start_pos: int,
+        current_pos: int,
         row: int,
         col: int,
         piece: int,
         current_color: int,
         captured_so_far: List[int],
-        visited: Set[int],
         all_captures: List[Move]
     ) -> bool:
         """Find captures for a king (flying captures)."""
@@ -318,12 +319,10 @@ class CheckersEngine:
                     
                     found_capture = True
                     new_captured = captured_so_far + [enemy_pos]
-                    if not visited:
-                        visited.add(pos)
                     
                     # Continue searching from landing position
                     self._find_captures_recursive(
-                        land_pos, piece, new_captured, visited, all_captures
+                        start_pos, land_pos, piece, new_captured, all_captures
                     )
                 
                 break  # Stop after first piece in this direction

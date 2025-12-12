@@ -6,7 +6,7 @@ services:
     env_file:
       - .env
     ports:
-      - "8787:8787"
+      - "192.168.1.50:8787:8787"
     depends_on:
       - redis
     restart: always
