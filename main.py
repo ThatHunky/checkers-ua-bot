@@ -187,6 +187,8 @@ def main():
     # Register command handlers
     application.add_handler(CommandHandler("start", handlers.start_bot_command))
     application.add_handler(CommandHandler("checkersplay", handlers.start_command))
+    application.add_handler(CommandHandler("cancel", handlers.cancel_command))
+    application.add_handler(CommandHandler("forfeit", handlers.forfeit_command))
     application.add_handler(CommandHandler("myrating", handlers.myrating_command))
     application.add_handler(CommandHandler("ratings", handlers.ratings_command))
     application.add_handler(CommandHandler("resetrankings", handlers.reset_rankings_command))  # Hidden admin
@@ -197,6 +199,9 @@ def main():
     application.add_handler(CallbackQueryHandler(handlers.cancel_invite_callback, pattern="^cancel_invite$"))
     application.add_handler(CallbackQueryHandler(handlers.accept_private_invite_callback, pattern="^accept_invite_"))
     application.add_handler(CallbackQueryHandler(handlers.decline_private_invite_callback, pattern="^decline_invite_"))
+    application.add_handler(CallbackQueryHandler(handlers.confirm_cancel_callback, pattern="^confirm_cancel_"))
+    application.add_handler(CallbackQueryHandler(handlers.confirm_forfeit_callback, pattern="^confirm_forfeit_"))
+    application.add_handler(CallbackQueryHandler(handlers.cancel_abort_callback, pattern="^cancel_abort$"))
     application.add_handler(CallbackQueryHandler(handlers.select_callback, pattern="^select_"))
     application.add_handler(CallbackQueryHandler(handlers.move_callback, pattern="^move_"))
     application.add_handler(CallbackQueryHandler(handlers.back_callback, pattern="^back$"))

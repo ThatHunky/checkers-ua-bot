@@ -112,6 +112,21 @@ class GameRepository:
         except Exception as e:
             print(f"Error getting all games: {e}")
         return games
+    
+    def get_user_game(self, user_id: int) -> Optional[tuple]:
+        """
+        Find an active game where the user is a player.
+        
+        Args:
+            user_id: Telegram user ID
+        
+        Returns:
+            Tuple of (chat_id, message_id, game_state) or None if no active game
+        """
+        for chat_id, message_id, game_state in self.get_all_games():
+            if game_state.get("red_player_id") == user_id or game_state.get("white_player_id") == user_id:
+                return (chat_id, message_id, game_state)
+        return None
 
     # ============ User Registry ============
     
@@ -190,7 +205,8 @@ class GameRepository:
     # ============ Pending Invites ============
     
     def create_invite(self, invite_id: str, challenger_id: int, challenger_name: str,
-                      challenger_chat_id: int, opponent_id: int, opponent_username: str) -> bool:
+                      challenger_username: Optional[str], challenger_chat_id: int, 
+                      opponent_id: int, opponent_username: str) -> bool:
         """
         Create a pending game invite.
         
@@ -198,6 +214,7 @@ class GameRepository:
             invite_id: Unique invite identifier (UUID)
             challenger_id: Telegram user ID of challenger
             challenger_name: First name of challenger
+            challenger_username: Username of challenger (optional)
             challenger_chat_id: Chat ID where game will be played
             opponent_id: Telegram user ID of opponent
             opponent_username: Username of opponent
@@ -211,6 +228,7 @@ class GameRepository:
             invite_data = {
                 "challenger_id": challenger_id,
                 "challenger_name": challenger_name,
+                "challenger_username": challenger_username,
                 "challenger_chat_id": challenger_chat_id,
                 "opponent_id": opponent_id,
                 "opponent_username": opponent_username,

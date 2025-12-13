@@ -222,6 +222,7 @@ class GameHandlers:
                 invite_id=invite_id,
                 challenger_id=user.id,
                 challenger_name=user.first_name,
+                challenger_username=user.username,
                 challenger_chat_id=chat.id,
                 opponent_id=opponent_info["user_id"],
                 opponent_username=opponent_username
@@ -268,7 +269,8 @@ class GameHandlers:
         # Store challenger info temporarily
         context.chat_data[f"challenge_{message.message_id}"] = {
             "red_player_id": user.id,
-            "red_player_name": user.first_name
+            "red_player_name": user.first_name,
+            "red_player_username": user.username
         }
     
     async def join_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -301,8 +303,10 @@ class GameHandlers:
             "current_turn": engine.current_turn,
             "red_player_id": challenge_info["red_player_id"],
             "red_player_name": challenge_info["red_player_name"],
+            "red_player_username": challenge_info.get("red_player_username"),
             "white_player_id": user.id,
             "white_player_name": user.first_name,
+            "white_player_username": user.username,
             "created_at": now,
             "last_activity": now
         }
@@ -385,15 +389,19 @@ class GameHandlers:
             "current_turn": engine.current_turn,
             "red_player_id": invite_info["challenger_id"],
             "red_player_name": invite_info["challenger_name"],
+            "red_player_username": invite_info.get("challenger_username"),
             "white_player_id": user.id,
             "white_player_name": user.first_name,
+            "white_player_username": user.username,
             "created_at": now,
             "last_activity": now,
-            "is_private_match": True
+            "is_private_match": True,
+            "challenger_chat_id": invite_info["challenger_chat_id"]
         }
         
-        # Send game message to challenger's chat
-        challenger_chat_id = invite_info["challenger_chat_id"]
+        # Game will be played in the OPPONENT's chat (where they accepted)
+        # This provides better UX - they're already looking at the message
+        opponent_chat_id = query.message.chat.id
         
         try:
             # Create board display
@@ -402,26 +410,36 @@ class GameHandlers:
             turn_msg = self._get_turn_message(game_state)
             keyboard = BoardRenderer.create_move_keyboard(engine, move_count=engine.move_count)
             
-            # Send game to challenger
+            # Send game board as a NEW message in opponent's chat
             game_message = await context.bot.send_message(
-                chat_id=challenger_chat_id,
-                text=f"🎮 <b>{user.first_name} прийняв виклик!</b>\n\n"
-                     f"{players_msg}\n\n{board_text}\n\n{turn_msg}",
-                parse_mode="HTML",
+                chat_id=opponent_chat_id,
+                text=f"{players_msg}\n\n{board_text}\n\n{turn_msg}",
                 reply_markup=keyboard
             )
             
-            # Save game state
-            self.repo.save_game(challenger_chat_id, game_message.message_id, game_state)
+            # Save game state (keyed by opponent's chat)
+            self.repo.save_game(opponent_chat_id, game_message.message_id, game_state)
             
-            # Update invite message for opponent
+            # Update the original invite message
             await query.answer("Гра розпочалась!")
             await query.edit_message_text(
-                f"✅ Ви прийняли виклик від <b>{invite_info['challenger_name']}</b>!\n\n"
-                f"🎮 Гра почалась у вашому чаті з ботом.\n"
-                f"Зараз хід червоних (🔴 {invite_info['challenger_name']}).",
+                f"✅ Ви прийняли виклик від <b>{invite_info['challenger_name']}</b>!\n"
+                f"⬇️ Дивіться дошку нижче.",
                 parse_mode="HTML"
             )
+            
+            # Notify challenger that game started - they need to open chat with bot
+            try:
+                await context.bot.send_message(
+                    chat_id=invite_info["challenger_chat_id"],
+                    text=f"🎮 <b>{user.first_name}</b> прийняв виклик!\n\n"
+                         f"{players_msg}\n\n{board_text}\n\n{turn_msg}\n\n"
+                         f"⚠️ Грайте у чаті з <b>{user.first_name}</b> або тут — "
+                         f"хід відобразиться в обох чатах.",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass  # Ignore if can't notify challenger
             
         except Exception as e:
             await query.answer("❌ Помилка при створенні гри.", show_alert=True)
@@ -743,6 +761,252 @@ class GameHandlers:
         query = update.callback_query
         await query.answer("Використайте /checkersplay для нової гри")
     
+    async def cancel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /cancel command - cancel current game (only before moves)."""
+        user = update.effective_user
+        chat = update.effective_chat
+        
+        # Only works in private chat
+        if chat.type != "private":
+            await update.message.reply_text(
+                "❌ Ця команда працює тільки в особистому чаті з ботом."
+            )
+            return
+        
+        # Find user's active game
+        game_info = self.repo.get_user_game(user.id)
+        
+        if not game_info:
+            await update.message.reply_text(
+                "❌ У вас немає активної гри."
+            )
+            return
+        
+        chat_id, message_id, game_state = game_info
+        move_count = game_state.get("move_count", 0)
+        
+        if move_count > 0:
+            await update.message.reply_text(
+                "❌ Неможливо скасувати гру після першого ходу.\n\n"
+                "Використовуйте /forfeit щоб здатися."
+            )
+            return
+        
+        # Get opponent name
+        if user.id == game_state["red_player_id"]:
+            opponent_name = game_state["white_player_name"]
+        else:
+            opponent_name = game_state["red_player_name"]
+        
+        # Show confirmation
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Так, скасувати", callback_data=f"confirm_cancel_{chat_id}_{message_id}"),
+            InlineKeyboardButton("❌ Ні", callback_data="cancel_abort")
+        ]])
+        
+        await update.message.reply_text(
+            f"⚠️ Ви впевнені, що хочете скасувати гру з <b>{opponent_name}</b>?\n\n"
+            "Рейтинг не буде змінено.",
+            parse_mode="HTML",
+            reply_markup=keyboard
+        )
+    
+    async def forfeit_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /forfeit command - forfeit current game."""
+        user = update.effective_user
+        chat = update.effective_chat
+        
+        # Only works in private chat
+        if chat.type != "private":
+            await update.message.reply_text(
+                "❌ Ця команда працює тільки в особистому чаті з ботом."
+            )
+            return
+        
+        # Find user's active game
+        game_info = self.repo.get_user_game(user.id)
+        
+        if not game_info:
+            await update.message.reply_text(
+                "❌ У вас немає активної гри."
+            )
+            return
+        
+        chat_id, message_id, game_state = game_info
+        move_count = game_state.get("move_count", 0)
+        
+        if move_count == 0:
+            await update.message.reply_text(
+                "ℹ️ Гра ще не почалась. Використовуйте /cancel щоб скасувати."
+            )
+            return
+        
+        # Get opponent name
+        if user.id == game_state["red_player_id"]:
+            opponent_name = game_state["white_player_name"]
+        else:
+            opponent_name = game_state["red_player_name"]
+        
+        # Show confirmation
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Так, здатися", callback_data=f"confirm_forfeit_{chat_id}_{message_id}"),
+            InlineKeyboardButton("❌ Ні", callback_data="cancel_abort")
+        ]])
+        
+        await update.message.reply_text(
+            f"⚠️ Ви впевнені, що хочете здатися у грі з <b>{opponent_name}</b>?\n\n"
+            "⚠️ Ваш рейтинг зменшиться!",
+            parse_mode="HTML",
+            reply_markup=keyboard
+        )
+    
+    async def confirm_cancel_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle confirmation of game cancellation."""
+        query = update.callback_query
+        user = query.from_user
+        
+        # Parse callback data: confirm_cancel_{chat_id}_{message_id}
+        parts = query.data.split("_")
+        if len(parts) != 4:
+            await query.answer("❌ Помилка.", show_alert=True)
+            return
+        
+        game_chat_id = int(parts[2])
+        game_message_id = int(parts[3])
+        
+        # Get game state
+        game_state = self.repo.get_game(game_chat_id, game_message_id)
+        
+        if not game_state:
+            await query.answer("❌ Гра вже закінчилась.", show_alert=True)
+            await query.edit_message_text("❌ Гра вже закінчилась.")
+            return
+        
+        # Verify user is a player
+        if user.id != game_state["red_player_id"] and user.id != game_state["white_player_id"]:
+            await query.answer("❌ Ви не є гравцем у цій грі!", show_alert=True)
+            return
+        
+        # Cancel the game
+        self.repo.delete_game(game_chat_id, game_message_id)
+        
+        # Update game message
+        try:
+            await context.bot.edit_message_text(
+                chat_id=game_chat_id,
+                message_id=game_message_id,
+                text="🚫 Гра скасована. Рейтинг не змінено."
+            )
+        except Exception:
+            pass
+        
+        # Update confirmation message
+        await query.answer("Гру скасовано")
+        await query.edit_message_text("🚫 Гру скасовано. Рейтинг не змінено.")
+        
+        # Notify opponent
+        opponent_id = game_state["white_player_id"] if user.id == game_state["red_player_id"] else game_state["red_player_id"]
+        try:
+            await context.bot.send_message(
+                chat_id=opponent_id,
+                text=f"🚫 <b>{user.first_name}</b> скасував гру.",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+    
+    async def confirm_forfeit_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle confirmation of forfeit."""
+        query = update.callback_query
+        user = query.from_user
+        
+        # Parse callback data: confirm_forfeit_{chat_id}_{message_id}
+        parts = query.data.split("_")
+        if len(parts) != 4:
+            await query.answer("❌ Помилка.", show_alert=True)
+            return
+        
+        game_chat_id = int(parts[2])
+        game_message_id = int(parts[3])
+        
+        # Get game state
+        game_state = self.repo.get_game(game_chat_id, game_message_id)
+        
+        if not game_state:
+            await query.answer("❌ Гра вже закінчилась.", show_alert=True)
+            await query.edit_message_text("❌ Гра вже закінчилась.")
+            return
+        
+        # Verify user is a player
+        if user.id != game_state["red_player_id"] and user.id != game_state["white_player_id"]:
+            await query.answer("❌ Ви не є гравцем у цій грі!", show_alert=True)
+            return
+        
+        # Determine winner (opponent)
+        if user.id == game_state["red_player_id"]:
+            winner_id = game_state["white_player_id"]
+            winner_name = game_state["white_player_name"]
+            loser_id = game_state["red_player_id"]
+            loser_name = game_state["red_player_name"]
+        else:
+            winner_id = game_state["red_player_id"]
+            winner_name = game_state["red_player_name"]
+            loser_id = game_state["white_player_id"]
+            loser_name = game_state["white_player_name"]
+        
+        # Record rating changes
+        rating_msg = ""
+        if self.rating_system:
+            try:
+                winner_data, loser_data = await self.rating_system.record_game(
+                    winner_id, winner_name, loser_id, loser_name
+                )
+                rating_msg = (
+                    f"\n\n📊 Рейтинг:\n"
+                    f"🏆 {winner_name}: {winner_data['rating']} ({winner_data['rating_change']:+d})\n"
+                    f"💀 {loser_name}: {loser_data['rating']} ({loser_data['rating_change']:+d})"
+                )
+            except Exception:
+                pass
+        
+        # Delete game
+        self.repo.delete_game(game_chat_id, game_message_id)
+        
+        # Update game message
+        try:
+            await context.bot.edit_message_text(
+                chat_id=game_chat_id,
+                message_id=game_message_id,
+                text=f"🏳️ <b>{user.first_name}</b> здався!\n\n"
+                     f"🏆 Переможець: <b>{winner_name}</b>{rating_msg}",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+        
+        # Update confirmation message
+        await query.answer("Ви здались")
+        await query.edit_message_text(
+            f"🏳️ Ви здались. {winner_name} переміг!{rating_msg}",
+            parse_mode="HTML" if rating_msg else None
+        )
+        
+        # Notify winner
+        try:
+            await context.bot.send_message(
+                chat_id=winner_id,
+                text=f"🏆 <b>{loser_name}</b> здався! Ви перемогли!{rating_msg}",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+    
+    async def cancel_abort_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle aborting cancel/forfeit confirmation."""
+        query = update.callback_query
+        await query.answer("Дію скасовано")
+        await query.edit_message_text("✅ Гра продовжується.")
+    
     async def reset_rankings_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Hidden admin command to reset all rankings. Only works in private chat for admin."""
         user = update.effective_user
@@ -869,23 +1133,41 @@ class GameHandlers:
         )
     
     @staticmethod
+    def _get_player_tag(game_state: dict, color: str) -> str:
+        """Get @mention or name for a player. Color is 'red' or 'white'."""
+        username = game_state.get(f"{color}_player_username")
+        name = game_state[f"{color}_player_name"]
+        
+        if username:
+            return f"@{username}"
+        return name
+    
+    @staticmethod
     def _get_players_message(game_state: dict) -> str:
-        """Get message showing both players."""
-        red_name = game_state["red_player_name"]
-        white_name = game_state["white_player_name"]
-        return f"🔴 {red_name}  vs  ⚪ {white_name}"
+        """Get message showing both players with @mentions."""
+        red_username = game_state.get("red_player_username")
+        white_username = game_state.get("white_player_username")
+        
+        red_tag = f"@{red_username}" if red_username else game_state["red_player_name"]
+        white_tag = f"@{white_username}" if white_username else game_state["white_player_name"]
+        
+        return f"🔴 {red_tag}  vs  ⚪ {white_tag}"
     
     @staticmethod
     def _get_turn_message(game_state: dict) -> str:
-        """Get turn message for current player."""
+        """Get turn message for current player with @mention."""
         current_turn = game_state["current_turn"]
         
         if current_turn == RED:
+            username = game_state.get("red_player_username")
             name = game_state["red_player_name"]
-            return locales.TURN_RED.format(name=name)
+            player_tag = f"@{username}" if username else name
+            return locales.TURN_RED.format(player_tag=player_tag)
         else:
+            username = game_state.get("white_player_username")
             name = game_state["white_player_name"]
-            return locales.TURN_WHITE.format(name=name)
+            player_tag = f"@{username}" if username else name
+            return locales.TURN_WHITE.format(player_tag=player_tag)
     
     async def noop_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle noop (no-operation) callbacks from non-interactive squares."""

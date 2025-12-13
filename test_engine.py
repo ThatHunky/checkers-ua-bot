@@ -18,7 +18,7 @@ def test_initial_board():
     
     assert white_count == 12, f"Expected 12 white pieces, got {white_count}"
     assert red_count == 12, f"Expected 12 red pieces, got {red_count}"
-    assert engine.current_turn == RED, "RED should start"
+    assert engine.current_turn == WHITE, "WHITE should start"
     
     print("✓ Initial board setup correct (12 vs 12 pieces)")
 
@@ -28,13 +28,13 @@ def test_legal_moves():
     print("\nTesting legal move generation...")
     engine = CheckersEngine()
     
-    # RED starts
-    red_moves = engine.get_legal_moves(RED)
-    print(f"  RED has {len(red_moves)} legal opening moves")
-    assert len(red_moves) > 0, "RED should have legal moves at start"
+    # WHITE starts
+    moves = engine.get_legal_moves(WHITE)
+    print(f"  WHITE has {len(moves)} legal opening moves")
+    assert len(moves) > 0, "WHITE should have legal moves at start"
     
     # Verify moves are forward diagonal
-    for move in red_moves[:3]:
+    for move in moves[:3]:
         from_row, from_col = engine.pos_to_coords(move.from_pos)
         to_row, to_col = engine.pos_to_coords(move.to_pos)
         print(f"  Example: {chr(65+from_col)}{8-from_row} → {chr(65+to_col)}{8-to_row}")

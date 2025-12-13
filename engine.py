@@ -31,7 +31,7 @@ class CheckersEngine:
     
     def __init__(self):
         self.board: List[int] = self.init_board()
-        self.current_turn = RED  # RED starts (top of board)
+        self.current_turn = WHITE  # WHITE starts (opponent moves first)
         self.move_count = 0  # Track total moves made
     
     @staticmethod

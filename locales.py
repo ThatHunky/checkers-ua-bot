@@ -8,8 +8,8 @@ CHALLENGE = "🔴 <b>Виклик!</b>\n\n{opponent} викликає на па�
 JOIN_BTN = "⚔️ До бою!"
 
 # Game Status
-TURN_RED = "🔴 Хід Червоних\nГравець: {name}"
-TURN_WHITE = "⚪ Хід Білих\nГравець: {name}"
+TURN_RED = "🔴 Хід Червоних\nГравець: {player_tag}"
+TURN_WHITE = "⚪ Хід Білих\nГравець: {player_tag}"
 GAME_STARTED = "🎮 Гра почалася!\n\n{board}\n\n{turn_msg}"
 
 # Win/Loss
