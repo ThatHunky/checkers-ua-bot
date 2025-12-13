@@ -263,3 +263,127 @@ class GameRepository:
         except Exception as e:
             print(f"Error deleting invite: {e}")
             return False
+    
+    # ============ Flood Control ============
+    
+    def check_rate_limit(self, user_id: int, action: str, max_actions: int = 5, window_seconds: int = 60):
+        """
+        Check if user has exceeded rate limit for an action.
+        
+        Args:
+            user_id: Telegram user ID
+            action: Action type (e.g., 'invite', 'command')
+            max_actions: Maximum number of actions allowed in the window
+            window_seconds: Time window in seconds
+        
+        Returns:
+            Tuple of (is_allowed, remaining_actions)
+        """
+        try:
+            key = f"checkers:ratelimit:{action}:{user_id}"
+            current_count = self.redis_client.get(key)
+            
+            if current_count is None:
+                # First action in this window
+                self.redis_client.setex(key, window_seconds, "1")
+                return (True, max_actions - 1)
+            
+            count = int(current_count)
+            
+            if count >= max_actions:
+                # Rate limit exceeded
+                ttl = self.redis_client.ttl(key)
+                return (False, 0)
+            
+            # Increment counter
+            self.redis_client.incr(key)
+            remaining = max_actions - count - 1
+            return (True, remaining)
+        except Exception as e:
+            print(f"Error checking rate limit: {e}")
+            # On error, allow the action
+            return (True, max_actions)
+    
+    def reset_rate_limit(self, user_id: int, action: str) -> bool:
+        """Reset rate limit for a user and action."""
+        try:
+            key = f"checkers:ratelimit:{action}:{user_id}"
+            self.redis_client.delete(key)
+            return True
+        except Exception as e:
+            print(f"Error resetting rate limit: {e}")
+            return False
+
+    # ============ Inline Game Storage ============
+    
+    @staticmethod
+    def _make_inline_key(inline_message_id: str) -> str:
+        """Generate Redis key for an inline message game."""
+        return f"checkers:inline_game:{inline_message_id}"
+
+    def save_inline_game(self, inline_message_id: str, game_state: dict) -> bool:
+        """Save game state for inline message."""
+        try:
+            key = self._make_inline_key(inline_message_id)
+            value = json.dumps(game_state)
+            self.redis_client.setex(key, self.ttl, value)
+            return True
+        except Exception as e:
+            print(f"Error saving inline game: {e}")
+            return False
+
+    def get_inline_game(self, inline_message_id: str) -> Optional[dict]:
+        """Get game state for inline message."""
+        try:
+            key = self._make_inline_key(inline_message_id)
+            value = self.redis_client.get(key)
+            if value:
+                return json.loads(value)
+            return None
+        except Exception as e:
+            print(f"Error getting inline game: {e}")
+            return None
+
+    def delete_inline_game(self, inline_message_id: str) -> bool:
+        """Delete inline game state."""
+        try:
+            key = self._make_inline_key(inline_message_id)
+            self.redis_client.delete(key)
+            return True
+        except Exception as e:
+            print(f"Error deleting inline game: {e}")
+            return False
+
+    def get_inline_challenge(self, inline_message_id: str) -> Optional[dict]:
+        """Get inline challenge data."""
+        try:
+            key = f"checkers:inline_challenge:{inline_message_id}"
+            value = self.redis_client.get(key)
+            if value:
+                return json.loads(value)
+            return None
+        except Exception as e:
+            print(f"Error getting inline challenge: {e}")
+            return None
+
+    def save_inline_challenge(self, inline_message_id: str, challenge_data: dict) -> bool:
+        """Save inline challenge data."""
+        try:
+            challenge_ttl = 60 * 5  # 5 minutes
+            key = f"checkers:inline_challenge:{inline_message_id}"
+            value = json.dumps(challenge_data)
+            self.redis_client.setex(key, challenge_ttl, value)
+            return True
+        except Exception as e:
+            print(f"Error saving inline challenge: {e}")
+            return False
+
+    def delete_inline_challenge(self, inline_message_id: str) -> bool:
+        """Delete inline challenge."""
+        try:
+            key = f"checkers:inline_challenge:{inline_message_id}"
+            self.redis_client.delete(key)
+            return True
+        except Exception as e:
+            print(f"Error deleting inline challenge: {e}")
+            return False

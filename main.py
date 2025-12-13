@@ -12,6 +12,8 @@ from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
+    InlineQueryHandler,
+    ChosenInlineResultHandler,
     ContextTypes
 )
 
@@ -194,8 +196,12 @@ def main():
     application.add_handler(CommandHandler("resetrankings", handlers.reset_rankings_command))  # Hidden admin
     application.add_handler(CommandHandler("addlegend", handlers.add_legend_command))  # Hidden arcade mode
     
+    # Register inline query handlers
+    application.add_handler(InlineQueryHandler(handlers.inline_query_handler))
+    application.add_handler(ChosenInlineResultHandler(handlers.chosen_inline_result_handler))
+    
     # Register callback handlers
-    application.add_handler(CallbackQueryHandler(handlers.join_callback, pattern="^join$"))
+    application.add_handler(CallbackQueryHandler(handlers.join_callback, pattern="^join"))
     application.add_handler(CallbackQueryHandler(handlers.cancel_invite_callback, pattern="^cancel_invite$"))
     application.add_handler(CallbackQueryHandler(handlers.accept_private_invite_callback, pattern="^accept_invite_"))
     application.add_handler(CallbackQueryHandler(handlers.decline_private_invite_callback, pattern="^decline_invite_"))

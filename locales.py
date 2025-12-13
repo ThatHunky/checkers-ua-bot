@@ -29,6 +29,7 @@ ERROR_INVALID_MOVE = "❌ Неправильний хід! Виберіть ін
 ERROR_NOT_YOUR_TURN = "⏸️ Зараз не ваш хід!"
 ERROR_NO_GAME = "❌ Гра не знайдена або закінчилася."
 ERROR_ALREADY_STARTED = "⚠️ Гра вже почалася!"
+ERROR_SELF_PLAY = "❌ Ви не можете грати проти себе!"
 
 # Buttons
 BTN_FORFEIT = "🏳️ Здатися"

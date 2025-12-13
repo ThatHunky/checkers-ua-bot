@@ -4,10 +4,21 @@ Telegram bot handlers for Ukrainian Checkers game.
 
 import os
 import uuid
+import json
+import logging
 from datetime import datetime
 from typing import Optional
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InlineQueryResultArticle,
+    InputTextMessageContent
+)
+from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
+
+logger = logging.getLogger(__name__)
 
 from engine import CheckersEngine, WHITE, RED, Move
 from repository import GameRepository
@@ -146,6 +157,35 @@ class GameHandlers:
         self.repo = repository
         self.rating_system = rating_system
     
+    def _get_game_state(self, chat_id: int = None, message_id: int = None, inline_message_id: str = None) -> Optional[dict]:
+        """
+        Get game state, supporting both regular messages and inline messages.
+        For private matches, if game not found in current chat, try the other player's chat.
+        """
+        # Handle inline messages
+        if inline_message_id:
+            return self.repo.get_inline_game(inline_message_id)
+        
+        # Handle regular messages
+        if chat_id and message_id:
+            game_state = self.repo.get_game(chat_id, message_id)
+            
+            if game_state:
+                return game_state
+            
+            # If not found, check if there's a private match we can find
+            # by checking all games and finding one where this chat_id matches
+            all_games = self.repo.get_all_games()
+            for game_chat_id, game_message_id, state in all_games:
+                if state.get("is_private_match"):
+                    # Check if this chat_id matches either player's chat
+                    if (state.get("challenger_chat_id") == chat_id or 
+                        state.get("opponent_chat_id") == chat_id):
+                        # Found a private match for this chat, return it
+                        return state
+        
+        return None
+    
     async def start_bot_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command - register user and show welcome message."""
         user = update.effective_user
@@ -214,6 +254,17 @@ class GameHandlers:
                 )
                 return
             
+            # Check rate limit for invitations (max 3 invites per minute)
+            is_allowed, remaining = self.repo.check_rate_limit(
+                user.id, "invite", max_actions=3, window_seconds=60
+            )
+            
+            if not is_allowed:
+                await update.message.reply_text(
+                    "⏸️ Занадто багато запрошень! Будь ласка, зачекайте хвилину перед наступним запрошенням."
+                )
+                return
+            
             # Create unique invite ID
             invite_id = str(uuid.uuid4())[:8]
             
@@ -257,6 +308,17 @@ class GameHandlers:
             return
         
         # Group chat flow - normal challenge
+        # Check rate limit for group challenges (max 5 challenges per 2 minutes)
+        is_allowed, remaining = self.repo.check_rate_limit(
+            user.id, "challenge", max_actions=5, window_seconds=120
+        )
+        
+        if not is_allowed:
+            await update.message.reply_text(
+                "⏸️ Занадто багато викликів! Будь ласка, зачекайте перед наступним викликом."
+            )
+            return
+        
         # Create challenge message
         challenge_text = locales.CHALLENGE.format(opponent=user.mention_html())
         keyboard = InlineKeyboardMarkup([[
@@ -276,12 +338,117 @@ class GameHandlers:
     async def join_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle join button - start the game."""
         query = update.callback_query
-        await query.answer()
         
         user = query.from_user
-        chat = query.message.chat
-        message_id = query.message.message_id
+        message = query.message
         
+        # Check if this is an inline message (inline_message_id is present when callback is from inline mode)
+        # For inline messages, query.inline_message_id is a string, and query.message is None
+        inline_message_id = query.inline_message_id
+        
+        if inline_message_id:
+            # Handle inline message join
+            logger.info(f"Join callback for inline message: {inline_message_id}, user: {user.id}")
+            
+            # Get challenge from inline message first
+            challenge_info = self.repo.get_inline_challenge(inline_message_id)
+            
+            # Fallback logic: if challenge not found but we have user_id in callback
+            if not challenge_info:
+                # Check if this is the new format join_{user_id}
+                parts = query.data.split("_")
+                if len(parts) >= 2 and parts[0] == "join":
+                    try:
+                        challenger_id = int(parts[1])
+                        logger.info(f"Challenge not found, reconstructing from callback for challenger {challenger_id}")
+                        
+                        # Get challenger info
+                        try:
+                            challenger = await context.bot.get_chat(challenger_id)
+                            challenge_info = {
+                                "red_player_id": challenger.id,
+                                "red_player_name": challenger.first_name,
+                                "red_player_username": challenger.username,
+                                "inline_message_id": inline_message_id
+                            }
+                        except Exception as e:
+                            logger.error(f"Failed to get challenger info: {e}")
+                    except ValueError:
+                        pass
+            
+            if not challenge_info:
+                logger.warning(f"No challenge found for inline_message_id: {inline_message_id}")
+                await query.answer("Виклик закінчився або вже використаний", show_alert=True)
+                return
+            
+            logger.info(f"Found challenge for inline message: {challenge_info}")
+            
+            # Don't allow challenger to play against themselves
+            if user.id == challenge_info["red_player_id"]:
+                await query.answer(locales.ERROR_SELF_PLAY, show_alert=True)
+                return
+            
+            # Answer the callback (only once, before starting the game)
+            await query.answer()
+            
+            try:
+                # Initialize game
+                engine = CheckersEngine()
+                now = datetime.utcnow().isoformat()
+                game_state = {
+                    "board": engine.board,
+                    "current_turn": engine.current_turn,
+                    "red_player_id": challenge_info["red_player_id"],
+                    "red_player_name": challenge_info["red_player_name"],
+                    "red_player_username": challenge_info.get("red_player_username"),
+                    "white_player_id": user.id,
+                    "white_player_name": user.first_name,
+                    "white_player_username": user.username,
+                    "created_at": now,
+                    "last_activity": now,
+                    "is_inline": True,
+                    "inline_message_id": inline_message_id
+                }
+                
+                # Save inline game
+                success = self.repo.save_inline_game(inline_message_id, game_state)
+                if not success:
+                    logger.error(f"Failed to save inline game for {inline_message_id}")
+                    await query.answer("Помилка при збереженні гри", show_alert=True)
+                    return
+                
+                # Delete challenge
+                self.repo.delete_inline_challenge(inline_message_id)
+                
+                # Update inline message
+                await self._update_inline_game_message(context.bot, inline_message_id, engine, game_state)
+                logger.info(f"Successfully started inline game for {inline_message_id}")
+            except Exception as e:
+                logger.error(f"Error starting inline game: {e}", exc_info=True)
+                try:
+                    await query.answer("Помилка при створенні гри", show_alert=True)
+                except Exception:
+                    pass
+            return
+        
+        # Regular group chat flow
+        # Answer the callback for regular messages
+        await query.answer()
+        
+        if not message or not message.chat:
+            try:
+                await context.bot.answer_callback_query(
+                    query.id,
+                    text="Помилка: не вдалося визначити чат",
+                    show_alert=True
+                )
+            except Exception:
+                pass
+            return
+            
+        chat = message.chat
+        message_id = message.message_id
+            
         # Get challenge info
         challenge_key = f"challenge_{message_id}"
         challenge_info = context.chat_data.get(challenge_key)
@@ -289,36 +456,36 @@ class GameHandlers:
         if not challenge_info:
             await query.edit_message_text(locales.ERROR_NO_GAME)
             return
-        
-        # Don't allow challenger to play against themselves
-        if user.id == challenge_info["red_player_id"]:
-            await query.answer(locales.ERROR_ALREADY_STARTED, show_alert=True)
-            return
-        
-        # Initialize game
-        engine = CheckersEngine()
-        now = datetime.utcnow().isoformat()
-        game_state = {
-            "board": engine.board,
-            "current_turn": engine.current_turn,
-            "red_player_id": challenge_info["red_player_id"],
-            "red_player_name": challenge_info["red_player_name"],
-            "red_player_username": challenge_info.get("red_player_username"),
-            "white_player_id": user.id,
-            "white_player_name": user.first_name,
-            "white_player_username": user.username,
-            "created_at": now,
-            "last_activity": now
-        }
-        
-        # Save to Redis
-        self.repo.save_game(chat.id, message_id, game_state)
-        
-        # Clean up challenge data
-        del context.chat_data[challenge_key]
-        
-        # Show game board
-        await self._update_game_message(query.message, engine, game_state)
+            
+            # Don't allow challenger to play against themselves
+            if user.id == challenge_info["red_player_id"]:
+                await query.answer(locales.ERROR_SELF_PLAY, show_alert=True)
+                return
+            
+            # Initialize game
+            engine = CheckersEngine()
+            now = datetime.utcnow().isoformat()
+            game_state = {
+                "board": engine.board,
+                "current_turn": engine.current_turn,
+                "red_player_id": challenge_info["red_player_id"],
+                "red_player_name": challenge_info["red_player_name"],
+                "red_player_username": challenge_info.get("red_player_username"),
+                "white_player_id": user.id,
+                "white_player_name": user.first_name,
+                "white_player_username": user.username,
+                "created_at": now,
+                "last_activity": now
+            }
+            
+            # Save to Redis
+            self.repo.save_game(chat.id, message_id, game_state)
+            
+            # Clean up challenge data
+            del context.chat_data[challenge_key]
+            
+            # Show game board
+            await self._update_game_message(message, engine, game_state, context)
     
     async def cancel_invite_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle cancel invitation button - only challenger can cancel."""
@@ -351,6 +518,15 @@ class GameHandlers:
         """Handle accepting a private game invitation."""
         query = update.callback_query
         user = query.from_user
+        
+        # Check rate limit for invite actions
+        is_allowed, _ = self.repo.check_rate_limit(
+            user.id, "invite_action", max_actions=10, window_seconds=60
+        )
+        
+        if not is_allowed:
+            await query.answer("⏸️ Занадто багато дій! Будь ласка, зачекайте.", show_alert=True)
+            return
         
         # Register user in registry
         self.repo.register_user(user.id, user.username, user.first_name)
@@ -399,9 +575,9 @@ class GameHandlers:
             "challenger_chat_id": invite_info["challenger_chat_id"]
         }
         
-        # Game will be played in the OPPONENT's chat (where they accepted)
-        # This provides better UX - they're already looking at the message
+        # For private matches, we need to send board messages to BOTH players
         opponent_chat_id = query.message.chat.id
+        challenger_chat_id = invite_info["challenger_chat_id"]
         
         try:
             # Create board display
@@ -410,15 +586,34 @@ class GameHandlers:
             turn_msg = self._get_turn_message(game_state)
             keyboard = BoardRenderer.create_move_keyboard(engine, move_count=engine.move_count)
             
-            # Send game board as a NEW message in opponent's chat
-            game_message = await context.bot.send_message(
+            game_message_text = f"{players_msg}\n\n{board_text}\n\n{turn_msg}"
+            
+            # Send game board to OPPONENT's chat (where they accepted)
+            opponent_game_message = await context.bot.send_message(
                 chat_id=opponent_chat_id,
-                text=f"{players_msg}\n\n{board_text}\n\n{turn_msg}",
-                reply_markup=keyboard
+                text=game_message_text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
             )
             
-            # Save game state (keyed by opponent's chat)
-            self.repo.save_game(opponent_chat_id, game_message.message_id, game_state)
+            # Send game board to CHALLENGER's chat (with same buttons)
+            challenger_game_message = await context.bot.send_message(
+                chat_id=challenger_chat_id,
+                text=game_message_text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+            
+            # Store both message IDs for private matches
+            game_state["opponent_chat_id"] = opponent_chat_id
+            game_state["opponent_message_id"] = opponent_game_message.message_id
+            game_state["challenger_chat_id"] = challenger_chat_id
+            game_state["challenger_message_id"] = challenger_game_message.message_id
+            
+            # Save game state (keyed by opponent's chat as primary, but both are stored)
+            self.repo.save_game(opponent_chat_id, opponent_game_message.message_id, game_state)
+            # Also save a reference in challenger's chat for easier lookup
+            self.repo.save_game(challenger_chat_id, challenger_game_message.message_id, game_state)
             
             # Update the original invite message
             await query.answer("Гра розпочалась!")
@@ -427,19 +622,6 @@ class GameHandlers:
                 f"⬇️ Дивіться дошку нижче.",
                 parse_mode="HTML"
             )
-            
-            # Notify challenger that game started - they need to open chat with bot
-            try:
-                await context.bot.send_message(
-                    chat_id=invite_info["challenger_chat_id"],
-                    text=f"🎮 <b>{user.first_name}</b> прийняв виклик!\n\n"
-                         f"{players_msg}\n\n{board_text}\n\n{turn_msg}\n\n"
-                         f"⚠️ Грайте у чаті з <b>{user.first_name}</b> або тут — "
-                         f"хід відобразиться в обох чатах.",
-                    parse_mode="HTML"
-                )
-            except Exception:
-                pass  # Ignore if can't notify challenger
             
         except Exception as e:
             await query.answer("❌ Помилка при створенні гри.", show_alert=True)
@@ -451,6 +633,15 @@ class GameHandlers:
         """Handle declining a private game invitation."""
         query = update.callback_query
         user = query.from_user
+        
+        # Check rate limit for invite actions
+        is_allowed, _ = self.repo.check_rate_limit(
+            user.id, "invite_action", max_actions=10, window_seconds=60
+        )
+        
+        if not is_allowed:
+            await query.answer("⏸️ Занадто багато дій! Будь ласка, зачекайте.", show_alert=True)
+            return
         
         # Parse invite ID from callback data: decline_invite_{invite_id}
         parts = query.data.split("_")
@@ -493,20 +684,44 @@ class GameHandlers:
     async def select_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle piece selection."""
         query = update.callback_query
+        user_id = query.from_user.id
+        
+        # Check rate limit for callbacks (max 20 actions per 10 seconds)
+        is_allowed, _ = self.repo.check_rate_limit(
+            user_id, "callback", max_actions=20, window_seconds=10
+        )
+        
+        if not is_allowed:
+            await query.answer("⏸️ Занадто швидко! Будь ласка, зачекайте трохи.", show_alert=True)
+            return
+        
         await query.answer()
         
         # Parse callback data
         _, pos_str = query.data.split("_")
         selected_pos = int(pos_str)
         
-        # Get game state
-        chat_id = query.message.chat.id
-        message_id = query.message.message_id
-        game_state = self.repo.get_game(chat_id, message_id)
+        # Check if this is an inline message
+        inline_message_id = query.inline_message_id
         
-        if not game_state:
-            await query.edit_message_text(locales.ERROR_NO_GAME)
-            return
+        if inline_message_id:
+            # Get inline game state
+            game_state = self._get_game_state(inline_message_id=inline_message_id)
+            if not game_state:
+                await query.answer(locales.ERROR_NO_GAME, show_alert=True)
+                return
+        else:
+            # Regular message
+            if not query.message or not query.message.chat:
+                await query.answer("Помилка: не вдалося визначити чат", show_alert=True)
+                return
+            chat_id = query.message.chat.id
+            message_id = query.message.message_id
+            game_state = self._get_game_state(chat_id, message_id)
+            
+            if not game_state:
+                await query.edit_message_text(locales.ERROR_NO_GAME)
+                return
         
         # Verify it's the player's turn
         user_id = query.from_user.id
@@ -533,18 +748,65 @@ class GameHandlers:
         turn_msg = self._get_turn_message(game_state)
         
         keyboard = BoardRenderer.create_move_keyboard(engine, selected_pos, engine.move_count)
+        message_text = f"{board_text}\n\n{turn_msg}\n\n✅ Обрано: позиція {selected_pos}"
         
-        try:
-            await query.edit_message_text(
-                f"{board_text}\n\n{turn_msg}\n\n✅ Обрано: позиція {selected_pos}",
-                reply_markup=keyboard
-            )
-        except Exception:
-            pass  # Ignore "Message is not modified" errors
+        # Check if this is an inline message
+        if inline_message_id:
+            try:
+                await context.bot.edit_message_text(
+                    inline_message_id=inline_message_id,
+                    text=message_text,
+                    reply_markup=keyboard
+                )
+            except Exception:
+                pass  # Ignore errors
+        # For private matches, update both players' messages
+        elif game_state.get("is_private_match"):
+            try:
+                # Update opponent's message
+                await context.bot.edit_message_text(
+                    chat_id=game_state["opponent_chat_id"],
+                    message_id=game_state["opponent_message_id"],
+                    text=message_text,
+                    reply_markup=keyboard
+                )
+            except Exception:
+                pass  # Ignore errors
+            
+            try:
+                # Update challenger's message
+                await context.bot.edit_message_text(
+                    chat_id=game_state["challenger_chat_id"],
+                    message_id=game_state["challenger_message_id"],
+                    text=message_text,
+                    reply_markup=keyboard
+                )
+            except Exception:
+                pass  # Ignore errors
+        else:
+            # Regular group chat - just update the one message
+            try:
+                await query.edit_message_text(
+                    message_text,
+                    reply_markup=keyboard
+                )
+            except Exception:
+                pass  # Ignore "Message is not modified" errors
     
     async def move_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle move execution."""
         query = update.callback_query
+        user_id = query.from_user.id
+        
+        # Check rate limit for callbacks (max 20 actions per 10 seconds)
+        is_allowed, _ = self.repo.check_rate_limit(
+            user_id, "callback", max_actions=20, window_seconds=10
+        )
+        
+        if not is_allowed:
+            await query.answer("⏸️ Занадто швидко! Будь ласка, зачекайте трохи.", show_alert=True)
+            return
+        
         await query.answer()
         
         # Parse callback data: move_from_to
@@ -552,13 +814,36 @@ class GameHandlers:
         from_pos = int(from_str)
         to_pos = int(to_str)
         
-        # Get game state
-        chat_id = query.message.chat.id
-        message_id = query.message.message_id
-        game_state = self.repo.get_game(chat_id, message_id)
+        # Check if this is an inline message
+        inline_message_id = query.inline_message_id
         
-        if not game_state:
-            await query.edit_message_text(locales.ERROR_NO_GAME)
+        if inline_message_id:
+            game_state = self._get_game_state(inline_message_id=inline_message_id)
+            if not game_state:
+                await query.answer(locales.ERROR_NO_GAME, show_alert=True)
+                return
+        else:
+            if not query.message or not query.message.chat:
+                await query.answer("Помилка: не вдалося визначити чат", show_alert=True)
+                return
+            chat_id = query.message.chat.id
+            message_id = query.message.message_id
+            game_state = self._get_game_state(chat_id, message_id)
+            
+            if not game_state:
+                await query.edit_message_text(locales.ERROR_NO_GAME)
+                return
+        
+        # Verify it's the player's turn
+        user_id = query.from_user.id
+        current_turn = game_state["current_turn"]
+        
+        if current_turn == RED and user_id != game_state["red_player_id"]:
+            await query.answer(locales.ERROR_NOT_YOUR_TURN, show_alert=True)
+            return
+        
+        if current_turn == WHITE and user_id != game_state["white_player_id"]:
+            await query.answer(locales.ERROR_NOT_YOUR_TURN, show_alert=True)
             return
         
         # Load engine state
@@ -568,6 +853,14 @@ class GameHandlers:
             "current_turn": game_state["current_turn"],
             "move_count": game_state.get("move_count", 0)
         })
+        
+        # Verify the selected piece belongs to the current player
+        piece_at_from = engine.board[from_pos]
+        piece_color = engine.get_piece_color(piece_at_from)
+        
+        if piece_color != engine.current_turn:
+            await query.answer("❌ Ви не можете рухати фігуру суперника!", show_alert=True)
+            return
         
         # Find and apply the move
         legal_moves = engine.get_legal_moves(engine.current_turn)
@@ -619,37 +912,113 @@ class GameHandlers:
             #     InlineKeyboardButton(locales.BTN_NEW_GAME, callback_data="new_game")
             # ]])
             
-            await query.edit_message_text(
-                f"{board_text}\n\n{win_msg}",
-                reply_markup=None
-            )
+            final_message = f"{board_text}\n\n{win_msg}"
             
-            # Delete game from Redis
-            self.repo.delete_game(chat_id, message_id)
+            # Check if this is an inline message
+            if inline_message_id:
+                try:
+                    await context.bot.edit_message_text(
+                        inline_message_id=inline_message_id,
+                        text=final_message,
+                        reply_markup=None
+                    )
+                except Exception:
+                    pass  # Ignore errors
+                # Delete inline game
+                self.repo.delete_inline_game(inline_message_id)
+            # For private matches, update both players' messages
+            elif game_state.get("is_private_match"):
+                try:
+                    # Update opponent's message
+                    await context.bot.edit_message_text(
+                        chat_id=game_state["opponent_chat_id"],
+                        message_id=game_state["opponent_message_id"],
+                        text=final_message,
+                        reply_markup=None
+                    )
+                except Exception:
+                    pass  # Ignore errors
+                
+                try:
+                    # Update challenger's message
+                    await context.bot.edit_message_text(
+                        chat_id=game_state["challenger_chat_id"],
+                        message_id=game_state["challenger_message_id"],
+                        text=final_message,
+                        reply_markup=None
+                    )
+                except Exception:
+                    pass  # Ignore errors
+                
+                # Delete game from both chats
+                self.repo.delete_game(game_state["opponent_chat_id"], game_state["opponent_message_id"])
+                self.repo.delete_game(game_state["challenger_chat_id"], game_state["challenger_message_id"])
+            else:
+                # Regular group chat
+                await query.edit_message_text(
+                    final_message,
+                    reply_markup=None
+                )
+                
+                # Delete game from Redis
+                self.repo.delete_game(chat_id, message_id)
         else:
             # Update game state
             game_state["board"] = engine.board
             game_state["current_turn"] = engine.current_turn
             game_state["move_count"] = engine.move_count
             game_state["last_activity"] = datetime.utcnow().isoformat()
-            self.repo.save_game(chat_id, message_id, game_state)
             
-            # Show updated board
-            await self._update_game_message(query.message, engine, game_state)
+            # Check if this is an inline message
+            if inline_message_id:
+                self.repo.save_inline_game(inline_message_id, game_state)
+                # Show updated board using inline message update
+                await self._update_inline_game_message(context.bot, inline_message_id, engine, game_state)
+            else:
+                self.repo.save_game(chat_id, message_id, game_state)
+                
+                # For private matches, also save to the other player's chat
+                if game_state.get("is_private_match"):
+                    # Save to challenger's chat
+                    self.repo.save_game(
+                        game_state["challenger_chat_id"],
+                        game_state["challenger_message_id"],
+                        game_state
+                    )
+                    # Save to opponent's chat
+                    self.repo.save_game(
+                        game_state["opponent_chat_id"],
+                        game_state["opponent_message_id"],
+                        game_state
+                    )
+                
+                # Show updated board
+                await self._update_game_message(query.message, engine, game_state, context)
     
     async def back_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle back button - return to piece selection."""
         query = update.callback_query
         await query.answer()
         
-        # Get game state
-        chat_id = query.message.chat.id
-        message_id = query.message.message_id
-        game_state = self.repo.get_game(chat_id, message_id)
+        # Check if this is an inline message
+        inline_message_id = query.inline_message_id
         
-        if not game_state:
-            await query.edit_message_text(locales.ERROR_NO_GAME)
-            return
+        if inline_message_id:
+            game_state = self._get_game_state(inline_message_id=inline_message_id)
+            if not game_state:
+                await query.answer(locales.ERROR_NO_GAME, show_alert=True)
+                return
+        else:
+            if not query.message or not query.message.chat:
+                await query.answer("Помилка: не вдалося визначити чат", show_alert=True)
+                return
+            chat_id = query.message.chat.id
+            message_id = query.message.message_id
+            game_state = self._get_game_state(chat_id, message_id)
+            
+            if not game_state:
+                await query.edit_message_text(locales.ERROR_NO_GAME)
+                return
         
         # Load engine state
         engine = CheckersEngine()
@@ -660,21 +1029,35 @@ class GameHandlers:
         })
         
         # Show board with piece selection
-        await self._update_game_message(query.message, engine, game_state)
+        if inline_message_id:
+            await self._update_inline_game_message(context.bot, inline_message_id, engine, game_state)
+        else:
+            await self._update_game_message(query.message, engine, game_state, context)
     
     async def forfeit_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle forfeit/cancel button."""
         query = update.callback_query
         await query.answer()
         
-        # Get game state
-        chat_id = query.message.chat.id
-        message_id = query.message.message_id
-        game_state = self.repo.get_game(chat_id, message_id)
+        # Check if this is an inline message
+        inline_message_id = query.inline_message_id
         
-        if not game_state:
-            await query.edit_message_text(locales.ERROR_NO_GAME)
-            return
+        if inline_message_id:
+            game_state = self._get_game_state(inline_message_id=inline_message_id)
+            if not game_state:
+                await query.answer(locales.ERROR_NO_GAME, show_alert=True)
+                return
+        else:
+            if not query.message or not query.message.chat:
+                await query.answer("Помилка: не вдалося визначити чат", show_alert=True)
+                return
+            chat_id = query.message.chat.id
+            message_id = query.message.message_id
+            game_state = self._get_game_state(chat_id, message_id)
+            
+            if not game_state:
+                await query.edit_message_text(locales.ERROR_NO_GAME)
+                return
         
         user_id = query.from_user.id
         
@@ -703,13 +1086,52 @@ class GameHandlers:
             #     InlineKeyboardButton(locales.BTN_NEW_GAME, callback_data="new_game")
             # ]])
             
-            await query.edit_message_text(
-                f"{board_text}\n\n{win_msg}",
-                reply_markup=None
-            )
+            cancel_message = f"{board_text}\n\n{win_msg}"
             
-            # Delete game
-            self.repo.delete_game(chat_id, message_id)
+            # Check if this is an inline message
+            if inline_message_id:
+                try:
+                    await context.bot.edit_message_text(
+                        inline_message_id=inline_message_id,
+                        text=cancel_message,
+                        reply_markup=None
+                    )
+                except Exception:
+                    pass
+                self.repo.delete_inline_game(inline_message_id)
+            # For private matches, update both players' messages
+            elif game_state.get("is_private_match"):
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=game_state["opponent_chat_id"],
+                        message_id=game_state["opponent_message_id"],
+                        text=cancel_message,
+                        reply_markup=None
+                    )
+                except Exception:
+                    pass
+                
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=game_state["challenger_chat_id"],
+                        message_id=game_state["challenger_message_id"],
+                        text=cancel_message,
+                        reply_markup=None
+                    )
+                except Exception:
+                    pass
+                
+                # Delete game from both chats
+                self.repo.delete_game(game_state["opponent_chat_id"], game_state["opponent_message_id"])
+                self.repo.delete_game(game_state["challenger_chat_id"], game_state["challenger_message_id"])
+            else:
+                if not inline_message_id:  # Only edit if not inline (already handled above)
+                    await query.edit_message_text(
+                        cancel_message,
+                        reply_markup=None
+                    )
+                    # Delete game
+                    self.repo.delete_game(chat_id, message_id)
             return
 
         # Determine winner (opponent of forfeiting player)
@@ -748,13 +1170,52 @@ class GameHandlers:
         #     InlineKeyboardButton(locales.BTN_NEW_GAME, callback_data="new_game")
         # ]])
         
-        await query.edit_message_text(
-            f"{board_text}\n\n{win_msg}",
-            reply_markup=None
-        )
+        forfeit_message = f"{board_text}\n\n{win_msg}"
         
-        # Delete game
-        self.repo.delete_game(chat_id, message_id)
+        # Check if this is an inline message
+        if inline_message_id:
+            try:
+                await context.bot.edit_message_text(
+                    inline_message_id=inline_message_id,
+                    text=forfeit_message,
+                    reply_markup=None
+                )
+            except Exception:
+                pass
+            self.repo.delete_inline_game(inline_message_id)
+        # For private matches, update both players' messages
+        elif game_state.get("is_private_match"):
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=game_state["opponent_chat_id"],
+                    message_id=game_state["opponent_message_id"],
+                    text=forfeit_message,
+                    reply_markup=None
+                )
+            except Exception:
+                pass
+            
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=game_state["challenger_chat_id"],
+                    message_id=game_state["challenger_message_id"],
+                    text=forfeit_message,
+                    reply_markup=None
+                )
+            except Exception:
+                pass
+            
+            # Delete game from both chats
+            self.repo.delete_game(game_state["opponent_chat_id"], game_state["opponent_message_id"])
+            self.repo.delete_game(game_state["challenger_chat_id"], game_state["challenger_message_id"])
+        else:
+            if not inline_message_id:  # Only edit if not inline (already handled above)
+                await query.edit_message_text(
+                    forfeit_message,
+                    reply_markup=None
+                )
+                # Delete game
+                self.repo.delete_game(chat_id, message_id)
     
     async def new_game_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle new game button - just show welcome message."""
@@ -875,7 +1336,7 @@ class GameHandlers:
         game_message_id = int(parts[3])
         
         # Get game state
-        game_state = self.repo.get_game(game_chat_id, game_message_id)
+        game_state = self._get_game_state(game_chat_id, game_message_id)
         
         if not game_state:
             await query.answer("❌ Гра вже закінчилась.", show_alert=True)
@@ -888,17 +1349,44 @@ class GameHandlers:
             return
         
         # Cancel the game
-        self.repo.delete_game(game_chat_id, game_message_id)
+        cancel_message = "🚫 Гра скасована. Рейтинг не змінено."
         
-        # Update game message
-        try:
-            await context.bot.edit_message_text(
-                chat_id=game_chat_id,
-                message_id=game_message_id,
-                text="🚫 Гра скасована. Рейтинг не змінено."
-            )
-        except Exception:
-            pass
+        # For private matches, update both players' messages
+        if game_state.get("is_private_match"):
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=game_state["opponent_chat_id"],
+                    message_id=game_state["opponent_message_id"],
+                    text=cancel_message
+                )
+            except Exception:
+                pass
+            
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=game_state["challenger_chat_id"],
+                    message_id=game_state["challenger_message_id"],
+                    text=cancel_message
+                )
+            except Exception:
+                pass
+            
+            # Delete game from both chats
+            self.repo.delete_game(game_state["opponent_chat_id"], game_state["opponent_message_id"])
+            self.repo.delete_game(game_state["challenger_chat_id"], game_state["challenger_message_id"])
+        else:
+            # Update game message
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=game_chat_id,
+                    message_id=game_message_id,
+                    text=cancel_message
+                )
+            except Exception:
+                pass
+            
+            # Delete game
+            self.repo.delete_game(game_chat_id, game_message_id)
         
         # Update confirmation message
         await query.answer("Гру скасовано")
@@ -930,7 +1418,7 @@ class GameHandlers:
         game_message_id = int(parts[3])
         
         # Get game state
-        game_state = self.repo.get_game(game_chat_id, game_message_id)
+        game_state = self._get_game_state(game_chat_id, game_message_id)
         
         if not game_state:
             await query.answer("❌ Гра вже закінчилась.", show_alert=True)
@@ -970,19 +1458,47 @@ class GameHandlers:
                 pass
         
         # Delete game
-        self.repo.delete_game(game_chat_id, game_message_id)
+        forfeit_message = f"🏳️ <b>{user.first_name}</b> здався!\n\n🏆 Переможець: <b>{winner_name}</b>{rating_msg}"
         
-        # Update game message
-        try:
-            await context.bot.edit_message_text(
-                chat_id=game_chat_id,
-                message_id=game_message_id,
-                text=f"🏳️ <b>{user.first_name}</b> здався!\n\n"
-                     f"🏆 Переможець: <b>{winner_name}</b>{rating_msg}",
-                parse_mode="HTML"
-            )
-        except Exception:
-            pass
+        # For private matches, update both players' messages
+        if game_state.get("is_private_match"):
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=game_state["opponent_chat_id"],
+                    message_id=game_state["opponent_message_id"],
+                    text=forfeit_message,
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+            
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=game_state["challenger_chat_id"],
+                    message_id=game_state["challenger_message_id"],
+                    text=forfeit_message,
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+            
+            # Delete game from both chats
+            self.repo.delete_game(game_state["opponent_chat_id"], game_state["opponent_message_id"])
+            self.repo.delete_game(game_state["challenger_chat_id"], game_state["challenger_message_id"])
+        else:
+            # Update game message
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=game_chat_id,
+                    message_id=game_message_id,
+                    text=forfeit_message,
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+            
+            # Delete game
+            self.repo.delete_game(game_chat_id, game_message_id)
         
         # Update confirmation message
         await query.answer("Ви здались")
@@ -1120,17 +1636,79 @@ class GameHandlers:
             parse_mode="HTML"
         )
     
-    async def _update_game_message(self, message, engine: CheckersEngine, game_state: dict):
+    async def _update_game_message(self, message, engine: CheckersEngine, game_state: dict, context: ContextTypes.DEFAULT_TYPE = None):
         """Update game message with current board and turn info."""
         board_text = BoardRenderer.render(engine.board)
         players_msg = self._get_players_message(game_state)
         turn_msg = self._get_turn_message(game_state)
         keyboard = BoardRenderer.create_move_keyboard(engine, move_count=engine.move_count)
         
-        await message.edit_text(
-            f"{players_msg}\n\n{board_text}\n\n{turn_msg}",
-            reply_markup=keyboard
-        )
+        message_text = f"{players_msg}\n\n{board_text}\n\n{turn_msg}"
+        
+        # Check if this is an inline message
+        if game_state.get("is_inline") and context:
+            inline_message_id = game_state.get("inline_message_id")
+            if inline_message_id:
+                await self._update_inline_game_message(context.bot, inline_message_id, engine, game_state)
+                return
+        
+        # For private matches, update both players' messages
+        if game_state.get("is_private_match") and context:
+            try:
+                # Update opponent's message
+                await context.bot.edit_message_text(
+                    chat_id=game_state["opponent_chat_id"],
+                    message_id=game_state["opponent_message_id"],
+                    text=message_text,
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass  # Ignore errors (message might be deleted or unchanged)
+            
+            try:
+                # Update challenger's message
+                await context.bot.edit_message_text(
+                    chat_id=game_state["challenger_chat_id"],
+                    message_id=game_state["challenger_message_id"],
+                    text=message_text,
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass  # Ignore errors (message might be deleted or unchanged)
+        else:
+            # Regular group chat - just update the one message
+            await message.edit_text(
+                message_text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+    
+    async def _update_inline_game_message(
+        self,
+        bot,
+        inline_message_id: str,
+        engine: CheckersEngine,
+        game_state: dict
+    ):
+        """Update inline message with current game state."""
+        board_text = BoardRenderer.render(engine.board)
+        players_msg = self._get_players_message(game_state)
+        turn_msg = self._get_turn_message(game_state)
+        keyboard = BoardRenderer.create_move_keyboard(engine, move_count=engine.move_count)
+        
+        message_text = f"{players_msg}\n\n{board_text}\n\n{turn_msg}"
+        
+        try:
+            await bot.edit_message_text(
+                inline_message_id=inline_message_id,
+                text=message_text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.error(f"Error updating inline message: {e}")
     
     @staticmethod
     def _get_player_tag(game_state: dict, color: str) -> str:
@@ -1144,12 +1722,15 @@ class GameHandlers:
     
     @staticmethod
     def _get_players_message(game_state: dict) -> str:
-        """Get message showing both players with @mentions."""
-        red_username = game_state.get("red_player_username")
-        white_username = game_state.get("white_player_username")
+        """Get message showing both players with hyperlinked first names."""
+        red_player_id = game_state.get("red_player_id")
+        red_player_name = game_state["red_player_name"]
+        white_player_id = game_state.get("white_player_id")
+        white_player_name = game_state["white_player_name"]
         
-        red_tag = f"@{red_username}" if red_username else game_state["red_player_name"]
-        white_tag = f"@{white_username}" if white_username else game_state["white_player_name"]
+        # Create hyperlinked first names
+        red_tag = f'<a href="tg://user?id={red_player_id}">{red_player_name}</a>' if red_player_id else red_player_name
+        white_tag = f'<a href="tg://user?id={white_player_id}">{white_player_name}</a>' if white_player_id else white_player_name
         
         return f"🔴 {red_tag}  vs  ⚪ {white_tag}"
     
@@ -1271,4 +1852,185 @@ class GameHandlers:
             await message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
         else:
             await message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+    # ============ Inline Mode Handlers ============
+    
+    async def inline_query_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle inline queries when user types @botname."""
+        query = update.inline_query
+        user = query.from_user
+        
+        # Register user
+        self.repo.register_user(user.id, user.username, user.first_name)
+        
+        # Parse query
+        query_text = query.query.strip().lower() if query.query else ""
+        
+        results = []
+        
+        # Default: Show "Start Challenge" option
+        if not query_text or query_text in ["play", "start", "game"]:
+            results.append(
+                InlineQueryResultArticle(
+                    id="challenge",
+                    title="🎮 Надіслати запрошення в шашки",
+                    description="Створити виклик, до якого може приєднатися будь-хто",
+                    input_message_content=InputTextMessageContent(
+                        message_text=f"🎮 <b>Виклик до гри в Шашки!</b>\n\n"
+                                    f"{user.first_name} викликає на партію в Українські Шашки!\n"
+                                    "Хто зіграє за Білих (⚪)?",
+                        parse_mode=ParseMode.HTML
+                    ),
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("⚔️ До бою!", callback_data=f"join_{user.id}")
+                    ]])
+                )
+            )
+        
+        # If query contains @username or "challenge", show challenge option
+        elif "@" in query_text or "challenge" in query_text:
+            # Extract username if present
+            username = None
+            query_parts = query_text.split()
+            
+            for part in query_parts:
+                if part.startswith("@"):
+                    username = part[1:]
+                    break
+                elif part == "challenge" and query_parts.index(part) + 1 < len(query_parts):
+                    next_part = query_parts[query_parts.index(part) + 1]
+                    if next_part.startswith("@"):
+                        username = next_part[1:]
+                    else:
+                        username = next_part
+                    break
+            
+            if username:
+                # Check if user exists
+                opponent_info = self.repo.get_user_by_username(username)
+                if opponent_info:
+                    results.append(
+                        InlineQueryResultArticle(
+                            id=f"challenge_{username}",
+                            title=f"🎮 Викликати @{username}",
+                            description=f"Викликати {opponent_info['first_name']} на гру",
+                            input_message_content=InputTextMessageContent(
+                                message_text=f"🎮 <b>{user.first_name}</b> викликає <b>@{username}</b> на гру в Українські Шашки!",
+                                parse_mode=ParseMode.HTML
+                            ),
+                            reply_markup=InlineKeyboardMarkup([[
+                                InlineKeyboardButton("✅ Прийняти виклик", callback_data=f"accept_inline_{username}")
+                            ]])
+                        )
+                    )
+                else:
+                    results.append(
+                        InlineQueryResultArticle(
+                            id="user_not_found",
+                            title="❌ Користувача не знайдено",
+                            description=f"@{username} ще не використовував цього бота",
+                            input_message_content=InputTextMessageContent(
+                                message_text=f"❌ Користувача @{username} не знайдено.\n\n"
+                                            "Користувач повинен спочатку використати /start з цим ботом."
+                            )
+                        )
+                    )
+            else:
+                # Show challenge option
+                results.append(
+                    InlineQueryResultArticle(
+                        id="challenge",
+                        title="🎮 Створити виклик",
+                        description="Введіть: @botname challenge @username",
+                        input_message_content=InputTextMessageContent(
+                            message_text="🎮 Виклик до гри в Шашки! Натисніть, щоб приєднатися.",
+                            parse_mode=ParseMode.HTML
+                        )
+                    )
+                )
+        
+        # If no results yet, show default
+        if not results:
+            results.append(
+                InlineQueryResultArticle(
+                    id="challenge",
+                    title="🎮 Надіслати запрошення в шашки",
+                    description="Створити виклик, до якого може приєднатися будь-хто",
+                    input_message_content=InputTextMessageContent(
+                        message_text=f"🎮 <b>Виклик до гри в Шашки!</b>\n\n"
+                                    f"{user.first_name} викликає на партію в Українські Шашки!\n"
+                                    "Хто зіграє за Білих (⚪)?",
+                        parse_mode=ParseMode.HTML
+                    ),
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("⚔️ До бою!", callback_data=f"join_{user.id}")
+                    ]])
+                )
+            )
+        
+        # Answer the inline query (cache for 1 second)
+        await query.answer(results, cache_time=1)
+
+    async def chosen_inline_result_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle when user selects an inline result."""
+        chosen_result = update.chosen_inline_result
+        user = chosen_result.from_user
+        result_id = chosen_result.result_id
+        inline_message_id = chosen_result.inline_message_id
+        
+        if not inline_message_id:
+            logger.warning(f"Chosen inline result without inline_message_id: {result_id}")
+            return  # Should not happen, but safety check
+        
+        # Register user
+        self.repo.register_user(user.id, user.username, user.first_name)
+        
+        logger.info(f"Chosen inline result: {result_id}, inline_message_id: {inline_message_id}, user: {user.id}")
+        
+        if result_id == "challenge":
+            # Create a challenge game
+            challenge_data = {
+                "red_player_id": user.id,
+                "red_player_name": user.first_name,
+                "red_player_username": user.username,
+                "inline_message_id": inline_message_id,
+                "created_at": datetime.utcnow().isoformat()
+            }
+            
+            # Store challenge in Redis
+            success = self.repo.save_inline_challenge(inline_message_id, challenge_data)
+            if success:
+                logger.info(f"Saved inline challenge for {inline_message_id}")
+            else:
+                logger.error(f"Failed to save inline challenge for {inline_message_id}")
+        
+        elif result_id.startswith("challenge_"):
+            # Direct challenge to specific user
+            username = result_id.replace("challenge_", "")
+            opponent_info = self.repo.get_user_by_username(username)
+            
+            if opponent_info:
+                # Create invite similar to private invites but for inline
+                invite_id = str(uuid.uuid4())[:8]
+                
+                # Store challenge data
+                challenge_data = {
+                    "red_player_id": user.id,
+                    "red_player_name": user.first_name,
+                    "red_player_username": user.username,
+                    "opponent_id": opponent_info["user_id"],
+                    "opponent_username": username,
+                    "inline_message_id": inline_message_id,
+                    "invite_id": invite_id,
+                    "created_at": datetime.utcnow().isoformat()
+                }
+                
+                self.repo.save_inline_challenge(inline_message_id, challenge_data)
+                
+                # Try to notify opponent (they must have started the bot)
+                try:
+                    # We'll handle this in the accept callback
+                    pass
+                except Exception:
+                    pass  # Can't notify, but challenge is still valid
 
