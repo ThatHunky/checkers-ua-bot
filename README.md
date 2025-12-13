@@ -1,130 +1,130 @@
-# Ukrainian Checkers Telegram Bot (Шашки)
+# Telegram Бот для Українських Шашок
 
-A lightweight PvP Telegram bot for Ukrainian Checkers running in Podman containers.
+Легкий PvP Telegram-бот для гри в українські шашки, що працює у контейнерах Podman.
 
-## Features
+## Можливості
 
-- 🎮 **Ukrainian Checkers Rules** (Russian Drafts)
-  - Men can capture forward AND backward
-  - Kings have "flying" movement (any distance)
-  - Mandatory capture enforcement
-  - Multi-capture sequences with instant promotion
-- 🇺🇦 **Full Ukrainian Localization**
-- 📦 **Containerized** with Podman
-- ⚡ **Redis State Management** with TTL-based cleanup
-- 🔗 **Webhook Mode** for production deployment
+- 🎮 **Правила українських шашок**
+  - Прості шашки б'ють вперед І назад
+  - Дамки мають "літаючу" ходу (на будь-яку відстань)
+  - Обов'язкове взяття (биття)
+  - Серійне взяття з миттєвим перетворенням у дамку
+- 🇺🇦 **Повна українська локалізація**
+- 📦 **Контейнеризація** за допомогою Podman
+- ⚡ **Управління станом через Redis** з автоматичним очищенням (TTL)
+- 🔗 **Режим Webhook** для розгортання у продакшн
 
-## Architecture
+## Архітектура
 
-- **Engine:** Pure Python game logic (`engine.py`)
-- **State:** Redis for game persistence (`repository.py`)
-- **Bot:** `python-telegram-bot` v20+ async (`main.py`, `handlers.py`)
-- **Infrastructure:** Podman with Nginx Proxy Manager
+- **Рушій:** Логіка гри на чистому Python (`engine.py`)
+- **Стан:** Redis для збереження даних гри (`repository.py`)
+- **Бот:** `python-telegram-bot` v20+ async (`main.py`, `handlers.py`)
+- **Інфраструктура:** Podman та будь-який Reverse Proxy (Nginx, Caddy тощо)
 
-## Setup
+## Налаштування
 
-### 1. Prerequisites
+### 1. Вимоги
 
-- Podman and Podman Compose
-- Telegram Bot Token (from [@BotFather](https://t.me/BotFather))
-- Nginx Proxy Manager configured to forward `https://checkers.dobrovolskyi.xyz` to port `8787`
+- Podman та Podman Compose
+- Токен Telegram-бота (від [@BotFather](https://t.me/BotFather))
+- Зворотний проксі (Reverse Proxy), налаштований на переадресацію вашого домену на порт `8787` (або інший, вказаний у конфігурації)
 
-### 2. Configuration
+### 2. Конфігурація
 
-Create `.env` file:
+Створіть файл `.env`:
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and set your bot token:
+Відредагуйте `.env` та вкажіть ваш токен:
 
 ```env
-TOKEN=your_actual_bot_token_here
+TOKEN=ваш_справжній_токен_бота
 REDIS_URL=redis://redis:6379/0
 PORT=8787
-WEBHOOK_URL=https://checkers.dobrovolskyi.xyz
+WEBHOOK_URL=[https://ваше-посилання.com](https://ваше-посилання.com)
 ```
 
-### 3. Build and Run
+### 3. Збірка та запуск
 
 ```bash
-# Build containers
+# Збірка контейнерів
 podman-compose build
 
-# Start services
+# Запуск сервісів
 podman-compose up -d
 
-# Check logs
+# Перегляд логів
 podman-compose logs -f bot
 ```
 
-### 4. Verify
+### 4. Перевірка
 
-1. Open Telegram
-2. Find your bot
-3. Send `/checkersplay`
-4. Expected response:
+1. Відкрийте Telegram
+2. Знайдіть свого бота
+3. Надішліть команду `/checkersplay`
+4. Очікувана відповідь:
    ```
    👋 Вітаю! Хочете зіграти в Шашки?
    
    🔴 **Виклик!**
    
-   {Your Name} викликає на партію в Шашки!
+   {Ваше Ім'я} викликає на партію в Шашки!
    Хто зіграє за Білих (⚪)?
    
    [⚔️ До бою!]
    ```
 
-## Game Rules
+## Правила гри
 
-Ukrainian Checkers (Russian Drafts) follows these rules:
+Українські шашки мають такі правила:
 
-1. **Board:** 8x8 with dark squares playable
-2. **Men:** Move forward diagonally, **capture forward AND backward**
-3. **Kings:** Move and capture any distance diagonally (flying)
-4. **Mandatory Capture:** Must capture if possible
-5. **Multi-Capture:** Continue capturing in one turn if possible
-6. **Instant Promotion:** Man becomes king immediately upon reaching far edge during a jump sequence
+1. **Дошка:** 8x8, гра ведеться на темних клітинах.
+2. **Прості шашки:** Ходять по діагоналі вперед, **б'ють вперед і назад**.
+3. **Дамки:** Ходять і б'ють на будь-яку відстань по діагоналі ("літають").
+4. **Обов'язкове взяття:** Якщо є можливість побити шашку суперника, гравець зобов'язаний це зробити.
+5. **Серійне взяття:** Якщо після взяття шашка може бити далі, хід продовжується.
+6. **Миттєве перетворення:** Проста шашка стає дамкою одразу, як тільки досягає дальнього краю дошки (навіть під час серійного взяття), і може продовжувати бій вже як дамка.
 
-## Project Structure
+## Структура проєкту
 
 ```
 checkers_bot/
-├── main.py              # Application entry point
-├── engine.py            # Game logic
-├── handlers.py          # Telegram handlers
-├── repository.py        # Redis state management
-├── locales.py           # Ukrainian strings
-├── requirements.txt     # Python dependencies
-├── Containerfile        # Podman image definition
-├── compose.yaml         # Multi-container setup
-├── .env.example         # Environment template
-└── .gitignore          # Git ignore rules
+├── main.py              # Точка входу в застосунок
+├── engine.py            # Ігрова логіка
+├── handlers.py          # Обробники Telegram подій
+├── repository.py        # Управління станом у Redis
+├── locales.py           # Українські текстові рядки
+├── requirements.txt     # Python-залежності
+├── Containerfile        # Опис образу Podman
+├── compose.yaml         # Налаштування мульти-контейнера
+├── .env.example         # Шаблон змінних середовища
+└── .gitignore          # Правила ігнорування git
 ```
 
-## Development
+## Розробка
 
-### Run Locally (without containers)
+### Локальний запуск (без контейнерів)
 
 ```bash
-# Install dependencies
+# Встановлення залежностей
 pip install -r requirements.txt
 
-# Set environment variables
-export TOKEN=your_bot_token
+# Встановлення змінних середовища
+export TOKEN=ваш_токен_бота
 export REDIS_URL=redis://localhost:6379/0
 export PORT=8787
-export WEBHOOK_URL=https://checkers.dobrovolskyi.xyz
+export WEBHOOK_URL=[https://example.com](https://example.com)
 
-# Start Redis (if not running)
+# Запуск Redis (якщо ще не запущено)
 redis-server
 
-# Run bot
+# Запуск бота
 python main.py
 ```
 
-### Testing Game Engine
+### Тестування ігрового рушія
 
 ```python
 from engine import CheckersEngine
@@ -134,20 +134,16 @@ moves = engine.get_legal_moves(engine.current_turn)
 print(f"Legal moves: {len(moves)}")
 ```
 
-## Deployment
+## Розгортання (Deployment)
 
-The bot runs behind Nginx Proxy Manager:
+Бот працює за зворотним проксі (Reverse Proxy):
 
-- **Public URL:** `https://checkers.dobrovolskyi.xyz/{TOKEN}`
-- **Container Port:** `8787` (mapped to host)
-- **Webhook Mode:** Telegram sends updates to the webhook URL
+- **Публічний URL:** `https://[ваш_сайт]/{TOKEN}`
+- **Порт контейнера:** `8787` (прокинутий на хост)
+- **Режим Webhook:** Telegram надсилає оновлення на URL вебхука.
 
-Ensure Nginx is configured to proxy traffic to `localhost:8787`.
+Переконайтеся, що ваш проксі (Nginx, Caddy, Apache тощо) налаштований на перенаправлення трафіку на `localhost:8787`.
 
-## License
+## Ліцензія
 
 MIT
-
-## Credits
-
-Built by a Principal Python Engineer specializing in Containerized Systems and Game Development.
