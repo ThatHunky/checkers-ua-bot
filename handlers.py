@@ -3,6 +3,7 @@ Telegram bot handlers for Ukrainian Checkers game.
 """
 
 import os
+import uuid
 from datetime import datetime
 from typing import Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -145,10 +146,33 @@ class GameHandlers:
         self.repo = repository
         self.rating_system = rating_system
     
+    async def start_bot_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /start command - register user and show welcome message."""
+        user = update.effective_user
+        
+        # Register user in the registry (enables receiving private game invites)
+        self.repo.register_user(user.id, user.username, user.first_name)
+        
+        await update.message.reply_text(
+            f"👋 Привіт, <b>{user.first_name}</b>!\n\n"
+            "🎮 Я — бот для гри в <b>Українські Шашки</b>.\n\n"
+            "<b>Як грати:</b>\n"
+            "• У групі: /checkersplay — будь-хто може приєднатись\n"
+            "• В особистому чаті: <code>/checkersplay @username</code>\n\n"
+            "<b>Команди:</b>\n"
+            "• /myrating — ваш рейтинг\n"
+            "• /ratings — таблиця лідерів\n\n"
+            "Удачі! 🏆",
+            parse_mode="HTML"
+        )
+    
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /checkersplay command - create a new game challenge."""
         user = update.effective_user
         chat = update.effective_chat
+        
+        # Register user in the registry (for future invites)
+        self.repo.register_user(user.id, user.username, user.first_name)
         
         # Private chat requires opponent specification
         if chat.type == "private":
@@ -163,24 +187,75 @@ class GameHandlers:
                 return
             
             # Try to get opponent info from args
-            opponent_arg = context.args[0]
+            opponent_username = context.args[0]
             
             # Remove @ if present
-            if opponent_arg.startswith("@"):
-                opponent_arg = opponent_arg[1:]
+            if opponent_username.startswith("@"):
+                opponent_username = opponent_username[1:]
             
-            # Store invite info - opponent will need to accept via /acceptgame
-            await update.message.reply_text(
-                "⚠️ Запрошення в особистих чатах поки не підтримуються.\n\n"
-                "Використовуйте команду /checkersplay в груповому чаті, "
-                "де присутній ваш суперник."
+            # Don't allow challenging yourself
+            if user.username and opponent_username.lower() == user.username.lower():
+                await update.message.reply_text(
+                    "❌ Ви не можете грати проти себе!"
+                )
+                return
+            
+            # Look up opponent in user registry
+            opponent_info = self.repo.get_user_by_username(opponent_username)
+            
+            if not opponent_info:
+                await update.message.reply_text(
+                    f"❌ Користувача @{opponent_username} не знайдено.\n\n"
+                    "Можливі причини:\n"
+                    "• Користувач ще не взаємодіяв з ботом\n"
+                    "• Неправильний нікнейм\n\n"
+                    "Попросіть суперника написати /start цьому боту, "
+                    "щоб зареєструватися."
+                )
+                return
+            
+            # Create unique invite ID
+            invite_id = str(uuid.uuid4())[:8]
+            
+            # Create pending invite in Redis
+            self.repo.create_invite(
+                invite_id=invite_id,
+                challenger_id=user.id,
+                challenger_name=user.first_name,
+                challenger_chat_id=chat.id,
+                opponent_id=opponent_info["user_id"],
+                opponent_username=opponent_username
             )
+            
+            # Send invitation to opponent
+            invite_keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Прийняти", callback_data=f"accept_invite_{invite_id}"),
+                InlineKeyboardButton("❌ Відхилити", callback_data=f"decline_invite_{invite_id}")
+            ]])
+            
+            try:
+                await context.bot.send_message(
+                    chat_id=opponent_info["user_id"],
+                    text=f"🎮 <b>{user.first_name}</b> запрошує вас на гру в шашки!\n\n"
+                         f"⏰ Запрошення дійсне 5 хвилин.",
+                    parse_mode="HTML",
+                    reply_markup=invite_keyboard
+                )
+                
+                await update.message.reply_text(
+                    f"✅ Запрошення надіслано @{opponent_username}!\n\n"
+                    f"⏰ Очікуємо відповідь протягом 5 хвилин..."
+                )
+            except Exception as e:
+                # Failed to send - opponent may have blocked the bot
+                self.repo.delete_invite(invite_id)
+                await update.message.reply_text(
+                    f"❌ Не вдалося надіслати запрошення @{opponent_username}.\n\n"
+                    "Можливо, користувач заблокував бота."
+                )
             return
         
         # Group chat flow - normal challenge
-        # Send welcome message
-        # await update.message.reply_text(locales.WELCOME)
-        
         # Create challenge message
         challenge_text = locales.CHALLENGE.format(opponent=user.mention_html())
         keyboard = InlineKeyboardMarkup([[
@@ -267,6 +342,135 @@ class GameHandlers:
         # Update message
         await query.answer("Запрошення скасовано")
         await query.edit_message_text("🚫 Запрошення на гру скасовано.")
+    
+    async def accept_private_invite_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle accepting a private game invitation."""
+        query = update.callback_query
+        user = query.from_user
+        
+        # Register user in registry
+        self.repo.register_user(user.id, user.username, user.first_name)
+        
+        # Parse invite ID from callback data: accept_invite_{invite_id}
+        parts = query.data.split("_")
+        if len(parts) != 3:
+            await query.answer("❌ Неправильний формат запрошення.", show_alert=True)
+            return
+        
+        invite_id = parts[2]
+        
+        # Get invite info
+        invite_info = self.repo.get_invite(invite_id)
+        
+        if not invite_info:
+            await query.answer("❌ Запрошення закінчилось або вже використане.", show_alert=True)
+            await query.edit_message_text("⏰ Це запрошення вже недійсне.")
+            return
+        
+        # Verify this user is the intended opponent
+        if user.id != invite_info["opponent_id"]:
+            await query.answer("❌ Це запрошення не для вас!", show_alert=True)
+            return
+        
+        # Delete the invite
+        self.repo.delete_invite(invite_id)
+        
+        # Initialize game
+        engine = CheckersEngine()
+        now = datetime.utcnow().isoformat()
+        
+        # Challenger is red (initiator), opponent is white
+        game_state = {
+            "board": engine.board,
+            "current_turn": engine.current_turn,
+            "red_player_id": invite_info["challenger_id"],
+            "red_player_name": invite_info["challenger_name"],
+            "white_player_id": user.id,
+            "white_player_name": user.first_name,
+            "created_at": now,
+            "last_activity": now,
+            "is_private_match": True
+        }
+        
+        # Send game message to challenger's chat
+        challenger_chat_id = invite_info["challenger_chat_id"]
+        
+        try:
+            # Create board display
+            board_text = BoardRenderer.render(engine.board)
+            players_msg = self._get_players_message(game_state)
+            turn_msg = self._get_turn_message(game_state)
+            keyboard = BoardRenderer.create_move_keyboard(engine, move_count=engine.move_count)
+            
+            # Send game to challenger
+            game_message = await context.bot.send_message(
+                chat_id=challenger_chat_id,
+                text=f"🎮 <b>{user.first_name} прийняв виклик!</b>\n\n"
+                     f"{players_msg}\n\n{board_text}\n\n{turn_msg}",
+                parse_mode="HTML",
+                reply_markup=keyboard
+            )
+            
+            # Save game state
+            self.repo.save_game(challenger_chat_id, game_message.message_id, game_state)
+            
+            # Update invite message for opponent
+            await query.answer("Гра розпочалась!")
+            await query.edit_message_text(
+                f"✅ Ви прийняли виклик від <b>{invite_info['challenger_name']}</b>!\n\n"
+                f"🎮 Гра почалась у вашому чаті з ботом.\n"
+                f"Зараз хід червоних (🔴 {invite_info['challenger_name']}).",
+                parse_mode="HTML"
+            )
+            
+        except Exception as e:
+            await query.answer("❌ Помилка при створенні гри.", show_alert=True)
+            await query.edit_message_text(
+                f"❌ Не вдалося створити гру: {str(e)}"
+            )
+    
+    async def decline_private_invite_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle declining a private game invitation."""
+        query = update.callback_query
+        user = query.from_user
+        
+        # Parse invite ID from callback data: decline_invite_{invite_id}
+        parts = query.data.split("_")
+        if len(parts) != 3:
+            await query.answer("❌ Неправильний формат запрошення.", show_alert=True)
+            return
+        
+        invite_id = parts[2]
+        
+        # Get invite info
+        invite_info = self.repo.get_invite(invite_id)
+        
+        if not invite_info:
+            await query.answer("❌ Запрошення вже недійсне.", show_alert=True)
+            await query.edit_message_text("⏰ Це запрошення вже недійсне.")
+            return
+        
+        # Verify this user is the intended opponent
+        if user.id != invite_info["opponent_id"]:
+            await query.answer("❌ Це запрошення не для вас!", show_alert=True)
+            return
+        
+        # Delete the invite
+        self.repo.delete_invite(invite_id)
+        
+        # Notify challenger about decline
+        try:
+            await context.bot.send_message(
+                chat_id=invite_info["challenger_chat_id"],
+                text=f"❌ <b>{user.first_name}</b> відхилив запрошення на гру.",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass  # Ignore if can't notify
+        
+        # Update message for opponent
+        await query.answer("Запрошення відхилено")
+        await query.edit_message_text("❌ Ви відхилили запрошення на гру.")
     
     async def select_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle piece selection."""

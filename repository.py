@@ -113,3 +113,135 @@ class GameRepository:
             print(f"Error getting all games: {e}")
         return games
 
+    # ============ User Registry ============
+    
+    def register_user(self, user_id: int, username: Optional[str], first_name: str) -> bool:
+        """
+        Register or update a user in the registry.
+        Called whenever a user interacts with the bot.
+        
+        Args:
+            user_id: Telegram user ID
+            username: Telegram username (without @), can be None
+            first_name: User's first name
+        
+        Returns:
+            True if successful
+        """
+        try:
+            user_ttl = 60 * 60 * 24 * 30  # 30 days
+            
+            # Store user info
+            user_data = {
+                "user_id": user_id,
+                "username": username,
+                "first_name": first_name,
+                "updated_at": datetime.utcnow().isoformat()
+            }
+            user_key = f"checkers:user:{user_id}"
+            self.redis_client.setex(user_key, user_ttl, json.dumps(user_data))
+            
+            # Store username -> user_id mapping (if username exists)
+            if username:
+                username_key = f"checkers:username:{username.lower()}"
+                self.redis_client.setex(username_key, user_ttl, str(user_id))
+            
+            return True
+        except Exception as e:
+            print(f"Error registering user: {e}")
+            return False
+    
+    def get_user_by_id(self, user_id: int) -> Optional[dict]:
+        """Get user info by user ID."""
+        try:
+            key = f"checkers:user:{user_id}"
+            value = self.redis_client.get(key)
+            if value:
+                return json.loads(value)
+            return None
+        except Exception as e:
+            print(f"Error getting user by ID: {e}")
+            return None
+    
+    def get_user_by_username(self, username: str) -> Optional[dict]:
+        """
+        Get user info by username.
+        
+        Args:
+            username: Username without @ prefix
+        
+        Returns:
+            User data dict or None if not found
+        """
+        try:
+            # First get user_id from username mapping
+            username_key = f"checkers:username:{username.lower()}"
+            user_id_str = self.redis_client.get(username_key)
+            
+            if not user_id_str:
+                return None
+            
+            # Then get full user info
+            return self.get_user_by_id(int(user_id_str))
+        except Exception as e:
+            print(f"Error getting user by username: {e}")
+            return None
+
+    # ============ Pending Invites ============
+    
+    def create_invite(self, invite_id: str, challenger_id: int, challenger_name: str,
+                      challenger_chat_id: int, opponent_id: int, opponent_username: str) -> bool:
+        """
+        Create a pending game invite.
+        
+        Args:
+            invite_id: Unique invite identifier (UUID)
+            challenger_id: Telegram user ID of challenger
+            challenger_name: First name of challenger
+            challenger_chat_id: Chat ID where game will be played
+            opponent_id: Telegram user ID of opponent
+            opponent_username: Username of opponent
+        
+        Returns:
+            True if successful
+        """
+        try:
+            invite_ttl = 60 * 5  # 5 minutes
+            
+            invite_data = {
+                "challenger_id": challenger_id,
+                "challenger_name": challenger_name,
+                "challenger_chat_id": challenger_chat_id,
+                "opponent_id": opponent_id,
+                "opponent_username": opponent_username,
+                "created_at": datetime.utcnow().isoformat()
+            }
+            
+            key = f"checkers:invite:{invite_id}"
+            self.redis_client.setex(key, invite_ttl, json.dumps(invite_data))
+            return True
+        except Exception as e:
+            print(f"Error creating invite: {e}")
+            return False
+    
+    def get_invite(self, invite_id: str) -> Optional[dict]:
+        """Get pending invite by ID."""
+        try:
+            key = f"checkers:invite:{invite_id}"
+            value = self.redis_client.get(key)
+            if value:
+                return json.loads(value)
+            return None
+        except Exception as e:
+            print(f"Error getting invite: {e}")
+            return None
+    
+    def delete_invite(self, invite_id: str) -> bool:
+        """Delete a pending invite."""
+        try:
+            key = f"checkers:invite:{invite_id}"
+            self.redis_client.delete(key)
+            return True
+        except Exception as e:
+            print(f"Error deleting invite: {e}")
+            return False

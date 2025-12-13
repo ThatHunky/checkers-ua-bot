@@ -185,6 +185,7 @@ def main():
     logger.info(f"Game timeout check enabled ({GAME_TIMEOUT_MINUTES} min timeout)")
     
     # Register command handlers
+    application.add_handler(CommandHandler("start", handlers.start_bot_command))
     application.add_handler(CommandHandler("checkersplay", handlers.start_command))
     application.add_handler(CommandHandler("myrating", handlers.myrating_command))
     application.add_handler(CommandHandler("ratings", handlers.ratings_command))
@@ -194,6 +195,8 @@ def main():
     # Register callback handlers
     application.add_handler(CallbackQueryHandler(handlers.join_callback, pattern="^join$"))
     application.add_handler(CallbackQueryHandler(handlers.cancel_invite_callback, pattern="^cancel_invite$"))
+    application.add_handler(CallbackQueryHandler(handlers.accept_private_invite_callback, pattern="^accept_invite_"))
+    application.add_handler(CallbackQueryHandler(handlers.decline_private_invite_callback, pattern="^decline_invite_"))
     application.add_handler(CallbackQueryHandler(handlers.select_callback, pattern="^select_"))
     application.add_handler(CallbackQueryHandler(handlers.move_callback, pattern="^move_"))
     application.add_handler(CallbackQueryHandler(handlers.back_callback, pattern="^back$"))
