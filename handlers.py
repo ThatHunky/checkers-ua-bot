@@ -82,16 +82,17 @@ class BoardRenderer:
                 # Determine button label
                 if pos == selected_pos:
                     # Selected piece - show with highlight
-                    label = "✅" + BoardRenderer._get_piece_emoji(piece)
+                    label = f"✅{BoardRenderer._get_piece_emoji(piece)}"
                 elif pos in selected_destinations:
                     # Possible destination - show target
                     label = "🎯"
                 elif piece != 0:
                     # Regular piece (clickable or not)
+                    # Remove padding spaces to prevent horizontal cutoff in 8x8 grid
                     label = BoardRenderer._get_piece_emoji(piece)
                 else:
-                    # Empty square - just a space
-                    label = " "
+                    # Empty square - use Braille pattern blank for consistent height
+                    label = "⠀"
                 
                 # Determine callback data
                 if selected_pos is None and pos in movable_positions:
@@ -178,7 +179,7 @@ class GameHandlers:
         
         # Group chat flow - normal challenge
         # Send welcome message
-        await update.message.reply_text(locales.WELCOME)
+        # await update.message.reply_text(locales.WELCOME)
         
         # Create challenge message
         challenge_text = locales.CHALLENGE.format(opponent=user.mention_html())
@@ -392,13 +393,13 @@ class GameHandlers:
             else:
                 win_msg = locales.WINNER.format(name=winner_name)
             
-            keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton(locales.BTN_NEW_GAME, callback_data="new_game")
-            ]])
+            # keyboard = InlineKeyboardMarkup([[
+            #     InlineKeyboardButton(locales.BTN_NEW_GAME, callback_data="new_game")
+            # ]])
             
             await query.edit_message_text(
                 f"{board_text}\n\n{win_msg}",
-                reply_markup=keyboard
+                reply_markup=None
             )
             
             # Delete game from Redis
@@ -476,13 +477,13 @@ class GameHandlers:
             })
             board_text = BoardRenderer.render(engine.board)
             
-            keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton(locales.BTN_NEW_GAME, callback_data="new_game")
-            ]])
+            # keyboard = InlineKeyboardMarkup([[
+            #     InlineKeyboardButton(locales.BTN_NEW_GAME, callback_data="new_game")
+            # ]])
             
             await query.edit_message_text(
                 f"{board_text}\n\n{win_msg}",
-                reply_markup=keyboard
+                reply_markup=None
             )
             
             # Delete game
@@ -521,13 +522,13 @@ class GameHandlers:
         else:
             win_msg = f"{locales.WINNER.format(name=winner_name)}\n(Суперник здався)"
         
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton(locales.BTN_NEW_GAME, callback_data="new_game")
-        ]])
+        # keyboard = InlineKeyboardMarkup([[
+        #     InlineKeyboardButton(locales.BTN_NEW_GAME, callback_data="new_game")
+        # ]])
         
         await query.edit_message_text(
             f"{board_text}\n\n{win_msg}",
-            reply_markup=keyboard
+            reply_markup=None
         )
         
         # Delete game
@@ -572,16 +573,103 @@ class GameHandlers:
             f"📊 Всі гравці почнуть з {1200} ELO."
         )
     
+    async def add_legend_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Hidden admin command to add arcade-style leaderboard entries.
+        Usage: /addlegend NAME RATING [WINS] [LOSSES]
+        Example: /addlegend AAA 2500 50 10
+        """
+        user = update.effective_user
+        chat = update.effective_chat
+        
+        # Check if private chat
+        if chat.type != "private":
+            return  # Silently ignore in group chats
+        
+        # Check if admin
+        admin_id_str = os.getenv("ADMIN_ID", "")
+        if not admin_id_str:
+            return
+        
+        try:
+            admin_id = int(admin_id_str)
+        except ValueError:
+            return
+        
+        if user.id != admin_id:
+            return  # Not admin, silently ignore
+        
+        # Parse arguments
+        if not self.rating_system:
+            await update.message.reply_text("❌ Система рейтингу не налаштована.")
+            return
+        
+        if not context.args or len(context.args) < 2:
+            await update.message.reply_text(
+                "🕹️ <b>Додати легенду до таблиці лідерів</b>\n\n"
+                "Використання:\n"
+                "<code>/addlegend ІМ'Я РЕЙТИНГ [ПЕРЕМОГИ] [ПОРАЗКИ]</code>\n\n"
+                "Приклади:\n"
+                "• <code>/addlegend AAA 2500</code>\n"
+                "• <code>/addlegend PRO 1800 42 13</code>\n"
+                "• <code>/addlegend ACE 2200 100 20</code>",
+                parse_mode="HTML"
+            )
+            return
+        
+        name = context.args[0]
+        
+        try:
+            rating = int(context.args[1])
+        except ValueError:
+            await update.message.reply_text("❌ Рейтинг повинен бути числом.")
+            return
+        
+        # Optional wins/losses
+        wins = 0
+        losses = 0
+        if len(context.args) >= 3:
+            try:
+                wins = int(context.args[2])
+            except ValueError:
+                pass
+        if len(context.args) >= 4:
+            try:
+                losses = int(context.args[3])
+            except ValueError:
+                pass
+        
+        # Add the arcade entry
+        fake_id = await self.rating_system.add_arcade_entry(name, rating, wins, losses)
+        
+        await update.message.reply_text(
+            f"🕹️ <b>Легенду додано!</b>\n\n"
+            f"👤 Ім'я: <b>{name}</b>\n"
+            f"📊 Рейтинг: <b>{rating}</b> ELO\n"
+            f"🏆 Перемоги: {wins}\n"
+            f"💀 Поразки: {losses}\n\n"
+            f"<i>(ID: {fake_id})</i>",
+            parse_mode="HTML"
+        )
+    
     async def _update_game_message(self, message, engine: CheckersEngine, game_state: dict):
         """Update game message with current board and turn info."""
         board_text = BoardRenderer.render(engine.board)
+        players_msg = self._get_players_message(game_state)
         turn_msg = self._get_turn_message(game_state)
         keyboard = BoardRenderer.create_move_keyboard(engine, move_count=engine.move_count)
         
         await message.edit_text(
-            f"{board_text}\n\n{turn_msg}",
+            f"{players_msg}\n\n{board_text}\n\n{turn_msg}",
             reply_markup=keyboard
         )
+    
+    @staticmethod
+    def _get_players_message(game_state: dict) -> str:
+        """Get message showing both players."""
+        red_name = game_state["red_player_name"]
+        white_name = game_state["white_player_name"]
+        return f"🔴 {red_name}  vs  ⚪ {white_name}"
     
     @staticmethod
     def _get_turn_message(game_state: dict) -> str:

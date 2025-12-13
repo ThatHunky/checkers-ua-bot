@@ -189,9 +189,11 @@ def main():
     application.add_handler(CommandHandler("myrating", handlers.myrating_command))
     application.add_handler(CommandHandler("ratings", handlers.ratings_command))
     application.add_handler(CommandHandler("resetrankings", handlers.reset_rankings_command))  # Hidden admin
+    application.add_handler(CommandHandler("addlegend", handlers.add_legend_command))  # Hidden arcade mode
     
     # Register callback handlers
     application.add_handler(CallbackQueryHandler(handlers.join_callback, pattern="^join$"))
+    application.add_handler(CallbackQueryHandler(handlers.cancel_invite_callback, pattern="^cancel_invite$"))
     application.add_handler(CallbackQueryHandler(handlers.select_callback, pattern="^select_"))
     application.add_handler(CallbackQueryHandler(handlers.move_callback, pattern="^move_"))
     application.add_handler(CallbackQueryHandler(handlers.back_callback, pattern="^back$"))

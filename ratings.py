@@ -257,3 +257,47 @@ class RatingSystem:
             
             logger.warning(f"All rankings reset! Deleted {count} player records.")
             return count
+    
+    async def add_arcade_entry(
+        self,
+        name: str,
+        rating: int,
+        wins: int = 0,
+        losses: int = 0
+    ) -> int:
+        """
+        Add a custom arcade-style leaderboard entry (like old arcade high scores).
+        Uses negative fake user IDs to avoid conflicts with real Telegram users.
+        
+        Args:
+            name: Display name for the entry (e.g., "AAA", "PRO", "ACE")
+            rating: ELO rating for the entry
+            wins: Optional wins count for display
+            losses: Optional losses count for display
+        
+        Returns:
+            The fake user_id assigned to this entry
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            # Find the lowest existing user_id to generate a new fake one
+            # Arcade entries use negative IDs to avoid conflicts with real users
+            async with db.execute(
+                "SELECT MIN(user_id) FROM players WHERE user_id < 0"
+            ) as cursor:
+                row = await cursor.fetchone()
+                min_id = row[0] if row and row[0] else 0
+            
+            # New fake ID is one less than the minimum (or -1 if first)
+            fake_user_id = min(min_id - 1, -1)
+            
+            games_played = wins + losses if (wins or losses) else 1
+            
+            await db.execute(
+                """INSERT INTO players (user_id, username, rating, games_played, wins, losses)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (fake_user_id, name, rating, games_played, wins, losses)
+            )
+            await db.commit()
+            
+            logger.info(f"Arcade entry added: {name} with {rating} ELO (fake ID: {fake_user_id})")
+            return fake_user_id
