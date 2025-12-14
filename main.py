@@ -138,14 +138,21 @@ async def check_game_timeouts(context: ContextTypes.DEFAULT_TYPE):
         _repository.delete_game(chat_id, message_id)
     
     # Check inline games
-    for inline_message_id, game_state in _repository.get_all_inline_games():
+    inline_games = _repository.get_all_inline_games()
+    logger.info(f"Checking {len(inline_games)} inline games for timeout")
+    
+    for inline_message_id, game_state in inline_games:
         # Skip games without activity tracking
         if "last_activity" not in game_state:
+            logger.info(f"Inline game {inline_message_id}: no last_activity")
             continue
         
         # Check if game has timed out
         last_activity = datetime.fromisoformat(game_state["last_activity"])
-        if now - last_activity < timeout_delta:
+        time_since_activity = now - last_activity
+        logger.info(f"Inline game {inline_message_id}: {time_since_activity.total_seconds()/60:.1f} mins since activity")
+        
+        if time_since_activity < timeout_delta:
             continue
         
         # Game timed out! Current player loses
