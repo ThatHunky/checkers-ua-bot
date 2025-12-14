@@ -57,6 +57,7 @@ async def check_game_timeouts(context: ContextTypes.DEFAULT_TYPE):
     now = datetime.utcnow()
     timeout_delta = timedelta(minutes=GAME_TIMEOUT_MINUTES)
     
+    # Check regular games (group chats, private matches)
     for chat_id, message_id, game_state in _repository.get_all_games():
         # Skip games without activity tracking (old games)
         if "last_activity" not in game_state:
@@ -97,19 +98,103 @@ async def check_game_timeouts(context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Error updating ratings: {e}")
         
         # Send timeout message
+        timeout_text = (
+            f"⏰ Час вийшов!\n\n"
+            f"🏆 {winner_name} перемагає!\n"
+            f"❌ {loser_name} програв через бездіяльність.{rating_msg}"
+        )
+        
         try:
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=f"⏰ Час вийшов!\n\n"
-                     f"🏆 {winner_name} перемагає!\n"
-                     f"❌ {loser_name} програв через бездіяльність.{rating_msg}"
-            )
+            # For private matches, update both players' messages
+            if game_state.get("is_private_match"):
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=game_state["opponent_chat_id"],
+                        message_id=game_state["opponent_message_id"],
+                        text=timeout_text
+                    )
+                except Exception:
+                    pass  # Ignore errors
+                
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=game_state["challenger_chat_id"],
+                        message_id=game_state["challenger_message_id"],
+                        text=timeout_text
+                    )
+                except Exception:
+                    pass  # Ignore errors
+            else:
+                # Regular group chat game
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=timeout_text
+                )
         except Exception as e:
             logger.error(f"Error sending timeout message: {e}")
         
         # Delete game
         _repository.delete_game(chat_id, message_id)
+    
+    # Check inline games
+    for inline_message_id, game_state in _repository.get_all_inline_games():
+        # Skip games without activity tracking
+        if "last_activity" not in game_state:
+            continue
+        
+        # Check if game has timed out
+        last_activity = datetime.fromisoformat(game_state["last_activity"])
+        if now - last_activity < timeout_delta:
+            continue
+        
+        # Game timed out! Current player loses
+        current_turn = game_state["current_turn"]
+        
+        if current_turn == RED:
+            loser_id = game_state["red_player_id"]
+            loser_name = game_state["red_player_name"]
+            winner_id = game_state["white_player_id"]
+            winner_name = game_state["white_player_name"]
+        else:
+            loser_id = game_state["white_player_id"]
+            loser_name = game_state["white_player_name"]
+            winner_id = game_state["red_player_id"]
+            winner_name = game_state["red_player_name"]
+        
+        logger.info(f"Inline game timeout: {loser_name} loses (inline_msg={inline_message_id})")
+        
+        # Update ratings
+        rating_msg = ""
+        if _rating_system and game_state.get("move_count", 0) > 0:
+            try:
+                changes = await _rating_system.record_game(winner_id, winner_name, loser_id, loser_name)
+                rating_msg = (
+                    f"\n\n📊 Рейтинг:\n"
+                    f"{winner_name}: {changes['winner']['rating']} ({changes['winner']['change']:+d})\n"
+                    f"{loser_name}: {changes['loser']['rating']} ({changes['loser']['change']:+d})"
+                )
+            except Exception as e:
+                logger.error(f"Error updating ratings: {e}")
+        
+        # Send timeout message for inline game
+        timeout_text = (
+            f"⏰ Час вийшов!\n\n"
+            f"🏆 {winner_name} перемагає!\n"
+            f"❌ {loser_name} програв через бездіяльність.{rating_msg}"
+        )
+        
+        try:
+            await context.bot.edit_message_text(
+                inline_message_id=inline_message_id,
+                text=timeout_text
+            )
+        except Exception as e:
+            logger.error(f"Error sending inline timeout message: {e}")
+        
+        # Delete inline game
+        _repository.delete_inline_game(inline_message_id)
+
 
 
 async def post_init(application: Application):
@@ -138,6 +223,9 @@ async def post_init(application: Application):
     # Set webhook if in webhook mode (non-fatal if rate limited)
     if USE_WEBHOOK:
         try:
+            # First delete webhook to drop pending updates, then set it again
+            logger.info("Deleting webhook to drop pending updates...")
+            await application.bot.delete_webhook(drop_pending_updates=True)
             logger.info(f"Setting webhook: {WEBHOOK_URL}/{TOKEN}")
             await application.bot.set_webhook(
                 url=f"{WEBHOOK_URL}/{TOKEN}",

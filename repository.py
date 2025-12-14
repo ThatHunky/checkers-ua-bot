@@ -113,6 +113,29 @@ class GameRepository:
             print(f"Error getting all games: {e}")
         return games
     
+    def get_all_inline_games(self) -> list:
+        """
+        Get all active inline game states.
+        
+        Returns:
+            List of tuples: (inline_message_id, game_state)
+        """
+        games = []
+        try:
+            # Scan for all inline game keys
+            for key in self.redis_client.scan_iter("checkers:inline_game:*"):
+                value = self.redis_client.get(key)
+                if value:
+                    # Parse key: checkers:inline_game:{inline_message_id}
+                    parts = key.split(":")
+                    if len(parts) == 3:
+                        inline_message_id = parts[2]
+                        game_state = json.loads(value)
+                        games.append((inline_message_id, game_state))
+        except Exception as e:
+            print(f"Error getting all inline games: {e}")
+        return games
+    
     def get_user_game(self, user_id: int) -> Optional[tuple]:
         """
         Find an active game where the user is a player.

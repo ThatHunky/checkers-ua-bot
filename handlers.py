@@ -456,36 +456,36 @@ class GameHandlers:
         if not challenge_info:
             await query.edit_message_text(locales.ERROR_NO_GAME)
             return
-            
-            # Don't allow challenger to play against themselves
-            if user.id == challenge_info["red_player_id"]:
-                await query.answer(locales.ERROR_SELF_PLAY, show_alert=True)
-                return
-            
-            # Initialize game
-            engine = CheckersEngine()
-            now = datetime.utcnow().isoformat()
-            game_state = {
-                "board": engine.board,
-                "current_turn": engine.current_turn,
-                "red_player_id": challenge_info["red_player_id"],
-                "red_player_name": challenge_info["red_player_name"],
-                "red_player_username": challenge_info.get("red_player_username"),
-                "white_player_id": user.id,
-                "white_player_name": user.first_name,
-                "white_player_username": user.username,
-                "created_at": now,
-                "last_activity": now
-            }
-            
-            # Save to Redis
-            self.repo.save_game(chat.id, message_id, game_state)
-            
-            # Clean up challenge data
-            del context.chat_data[challenge_key]
-            
-            # Show game board
-            await self._update_game_message(message, engine, game_state, context)
+        
+        # Don't allow challenger to play against themselves
+        if user.id == challenge_info["red_player_id"]:
+            await query.answer(locales.ERROR_SELF_PLAY, show_alert=True)
+            return
+        
+        # Initialize game
+        engine = CheckersEngine()
+        now = datetime.utcnow().isoformat()
+        game_state = {
+            "board": engine.board,
+            "current_turn": engine.current_turn,
+            "red_player_id": challenge_info["red_player_id"],
+            "red_player_name": challenge_info["red_player_name"],
+            "red_player_username": challenge_info.get("red_player_username"),
+            "white_player_id": user.id,
+            "white_player_name": user.first_name,
+            "white_player_username": user.username,
+            "created_at": now,
+            "last_activity": now
+        }
+        
+        # Save to Redis
+        self.repo.save_game(chat.id, message_id, game_state)
+        
+        # Clean up challenge data
+        del context.chat_data[challenge_key]
+        
+        # Show game board
+        await self._update_game_message(message, engine, game_state, context)
     
     async def cancel_invite_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle cancel invitation button - only challenger can cancel."""
