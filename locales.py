@@ -43,3 +43,44 @@ PIECE_WHITE = "⚪"
 PIECE_WHITE_KING = "👑"
 PIECE_RED = "🔴"
 PIECE_RED_KING = "💎"
+
+# Matchmaking / Menu
+MENU_TITLE = "Головне меню"
+MENU_PLAY = "▶️ Грати"
+MENU_PROFILE = "👤 Профіль"
+MENU_RATING = "🏆 Рейтинг та Статистика"
+MENU_SETTINGS = "⚙️ Налаштування"
+MENU_HELP = "❓ Допомога"
+MENU_ABOUT = "ℹ️ Про бота"
+
+PLAY_TITLE = "Режими гри"
+PLAY_QUICK_RATED = "⚡ Швидка гра (Рейтинг)"
+PLAY_QUICK_CASUAL = "🎲 Швидка гра (Без рейтингу)"
+PLAY_INVITE_RATED = "🤝 Запросити друга (Рейтинг)"
+PLAY_INVITE_CASUAL = "🧩 Запросити друга (Без рейтингу)"
+PLAY_JOIN_CODE = "🔢 Приєднатися за кодом"
+BTN_BACK = "⬅️ Назад"
+SEARCHING_TITLE = "Пошук суперника..."
+SEARCHING_CANCEL = "❌ Скасувати"
+SEARCHING_BACK = "⬅️ Назад до режимів"
+INVITE_CREATED = "📨 Запрошення створено: <code>{code}</code>"
+INVITE_SHARE = "📤 Поділитися кодом"
+INVITE_CANCEL = "❌ Скасувати запрошення"
+PROFILE_TEMPLATE = (
+    "👤 {name}\n"
+    "⭐ Рейтинг: {rating}\n"
+    "🎮 Ігор зіграно: {games}\n"
+    "✅ Перемог: {wins}\n"
+    "❌ Поразок: {losses}"
+)
+SETTINGS_TITLE = "Налаштування"
+SETTINGS_NOTIFICATIONS = "🔔 Сповіщення (заглушка)"
+SETTINGS_PREFER_RATED = "🎯 Віддавати перевагу рейтинговим іграм"
+HELP_TEXT = (
+    "❓ <b>Як грати</b>\n"
+    "Виберіть режим гри в меню, робіть ходи натискаючи на дошку."
+)
+ABOUT_TEXT = (
+    "ℹ️ Checkers UA — бот для гри в українські шашки. "
+    "Вихідний код: https://github.com/ThatHunky/checkers-ua-bot"
+)
