@@ -17,9 +17,11 @@ from telegram.ext import (
     ContextTypes
 )
 
+
 from repository import GameRepository
 from handlers import GameHandlers
 from ratings import RatingSystem
+from game_data import GameDataRepository
 from engine import RED, WHITE
 
 # Load environment variables
@@ -32,6 +34,7 @@ PORT = int(os.getenv("PORT", "8787"))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://checkers.dobrovolskyi.xyz")
 WEBHOOK_LISTEN = os.getenv("WEBHOOK_LISTEN", "0.0.0.0")
 DB_PATH = os.getenv("DB_PATH", "/data/ratings.db")
+GAMEDATA_DB_PATH = os.getenv("GAMEDATA_DB_PATH", "/data/gamedata.db")
 USE_WEBHOOK = os.getenv("USE_WEBHOOK", "false").lower() == "true"
 GAME_TIMEOUT_MINUTES = int(os.getenv("GAME_TIMEOUT_MINUTES", "10"))
 
@@ -212,13 +215,21 @@ async def post_init(application: Application):
     await rating_system.initialize()
     logger.info("Rating system initialized")
     
+    # Initialize game data repository
+    logger.info(f"Initializing game data repository: {GAMEDATA_DB_PATH}")
+    game_data_repo = GameDataRepository(GAMEDATA_DB_PATH)
+    await game_data_repo.initialize()
+    logger.info("Game data repository initialized")
+    
     # Store in bot_data for handler access
     application.bot_data["rating_system"] = rating_system
+    application.bot_data["game_data_repo"] = game_data_repo
     
     # Set command hints (non-fatal if rate limited)
     try:
         commands = [
             BotCommand("checkersplay", "🎮 Почати нову гру в Шашки"),
+            BotCommand("checkersreplay", "📺 Історія моїх ігор"),
             BotCommand("myrating", "📊 Показати мій рейтинг"),
             BotCommand("ratings", "🏆 Таблиця лідерів")
         ]
@@ -261,8 +272,11 @@ def main():
     # Initialize rating system (sync creation, async init in post_init)
     rating_system = RatingSystem(DB_PATH)
     
+    # Initialize game data repository (sync creation, async init in post_init)
+    game_data_repo = GameDataRepository(GAMEDATA_DB_PATH)
+    
     # Initialize handlers
-    handlers = GameHandlers(repository, rating_system)
+    handlers = GameHandlers(repository, rating_system, game_data_repo)
     
     # Build application
     application = (
@@ -284,6 +298,7 @@ def main():
     # Register command handlers
     application.add_handler(CommandHandler("start", handlers.start_bot_command))
     application.add_handler(CommandHandler("checkersplay", handlers.start_command))
+    application.add_handler(CommandHandler("checkersreplay", handlers.replay_command))
     application.add_handler(CommandHandler("cancel", handlers.cancel_command))
     application.add_handler(CommandHandler("forfeit", handlers.forfeit_command))
     application.add_handler(CommandHandler("myrating", handlers.myrating_command))
@@ -308,6 +323,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handlers.back_callback, pattern="^back$"))
     application.add_handler(CallbackQueryHandler(handlers.forfeit_callback, pattern="^forfeit$"))
     application.add_handler(CallbackQueryHandler(handlers.new_game_callback, pattern="^new_game$"))
+    application.add_handler(CallbackQueryHandler(handlers.replay_game_callback, pattern="^replay_"))
     application.add_handler(CallbackQueryHandler(handlers.noop_callback, pattern="^noop_"))
     application.add_handler(CallbackQueryHandler(handlers.ratings_page_callback, pattern="^ratings_page_"))
     

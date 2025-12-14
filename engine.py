@@ -24,6 +24,7 @@ class Move:
     to_pos: int
     captures: List[int]  # Positions of captured pieces
     promotes: bool = False  # Does this move result in promotion?
+    promoted_during_capture: bool = False  # Did piece promote mid-capture?
 
 
 class CheckersEngine:
@@ -207,11 +208,16 @@ class CheckersEngine:
         
         # If no further captures, record this capture sequence
         if not found_capture and captured_so_far:
+            # Get original piece to check if it was promoted during capture
+            original_piece = self.board[start_pos]
+            was_promoted = self.is_king(piece) and not self.is_king(original_piece)
+            
             all_captures.append(Move(
                 from_pos=start_pos,
                 to_pos=current_pos,
                 captures=captured_so_far.copy(),
-                promotes=False
+                promotes=False,
+                promoted_during_capture=was_promoted
             ))
     
     def _find_man_captures(
@@ -329,6 +335,116 @@ class CheckersEngine:
         
         return found_capture
     
+    def find_single_hop_captures(self, from_pos: int) -> List[Move]:
+        """
+        Find all single-hop captures from a position (not full sequences).
+        Used for manual multi-jump gameplay.
+        
+        Args:
+            from_pos: Starting position
+            
+        Returns:
+            List of single-hop capture moves
+        """
+        piece = self.board[from_pos]
+        if piece == EMPTY:
+            return []
+        
+        color = self.get_piece_color(piece)
+        if color != self.current_turn:
+            return []
+        
+        single_hops = []
+        row, col = self.pos_to_coords(from_pos)
+        
+        if self.is_king(piece):
+            # King can jump in all 4 diagonal directions, any distance
+            for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                for dist in range(1, 8):
+                    enemy_row = row + dr * dist
+                    enemy_col = col + dc * dist
+                    
+                    if not self.is_valid_pos(enemy_row, enemy_col):
+                        break
+                    
+                    enemy_pos = self.coords_to_pos(enemy_row, enemy_col)
+                    enemy_piece = self.board[enemy_pos]
+                    enemy_color = self.get_piece_color(enemy_piece)
+                    
+                    if enemy_piece == EMPTY:
+                        continue  # Empty square, keep looking
+                    
+                    # Found a piece
+                    if enemy_color != color:
+                        # Enemy piece - check landing squares beyond it
+                        for land_dist in range(dist + 1, 9):
+                            land_row = row + dr * land_dist
+                            land_col = col + dc * land_dist
+                            
+                            if not self.is_valid_pos(land_row, land_col):
+                                break
+                            
+                            land_pos = self.coords_to_pos(land_row, land_col)
+                            if self.board[land_pos] != EMPTY:
+                                break  # Blocked
+                            
+                            # Valid single-hop capture
+                            single_hops.append(Move(
+                                from_pos=from_pos,
+                                to_pos=land_pos,
+                                captures=[enemy_pos],
+                                promotes=False,
+                                promoted_during_capture=False
+                            ))
+                    
+                    break  # Stop after first piece in this direction
+        else:
+            # Man captures in all 4 diagonal directions
+            for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                enemy_row = row + dr
+                enemy_col = col + dc
+                land_row = row + 2 * dr
+                land_col = col + 2 * dc
+                
+                if not self.is_valid_pos(enemy_row, enemy_col) or not self.is_valid_pos(land_row, land_col):
+                    continue
+                
+                enemy_pos = self.coords_to_pos(enemy_row, enemy_col)
+                land_pos = self.coords_to_pos(land_row, land_col)
+                
+                enemy_piece = self.board[enemy_pos]
+                enemy_color = self.get_piece_color(enemy_piece)
+                
+                if (enemy_color and enemy_color != color and 
+                    self.board[land_pos] == EMPTY):
+                    
+                    # Check if piece will promote on landing
+                    will_promote = (piece == WHITE and land_row == 0) or (piece == RED and land_row == 7)
+                    
+                    single_hops.append(Move(
+                        from_pos=from_pos,
+                        to_pos=land_pos,
+                        captures=[enemy_pos],
+                        promotes=will_promote,
+                        promoted_during_capture=will_promote
+                    ))
+        
+        return single_hops
+    
+    def must_continue_capturing(self, pos: int) -> bool:
+        """
+        Check if piece at position has mandatory continuation captures.
+        Used after a capture to determine if player must continue.
+        
+        Args:
+            pos: Position to check
+            
+        Returns:
+            True if piece must continue capturing
+        """
+        single_hops = self.find_single_hop_captures(pos)
+        return len(single_hops) > 0
+    
     def apply_move(self, move: Move) -> bool:
         """
         Apply a move to the board.
@@ -351,11 +467,15 @@ class CheckersEngine:
             self.board[cap_pos] = EMPTY
         
         # Handle promotion
+        # Promote if: reached king row at end, OR promoted during multi-capture
         to_row, _ = self.pos_to_coords(move.to_pos)
-        if piece == WHITE and to_row == 0:
-            self.board[move.to_pos] = WHITE_KING
-        elif piece == RED and to_row == 7:
-            self.board[move.to_pos] = RED_KING
+        reached_king_row = (piece == WHITE and to_row == 0) or (piece == RED and to_row == 7)
+        
+        if move.promoted_during_capture or reached_king_row:
+            if piece in (WHITE, WHITE_KING):
+                self.board[move.to_pos] = WHITE_KING
+            else:
+                self.board[move.to_pos] = RED_KING
         
         # Switch turn
         self.current_turn = RED if self.current_turn == WHITE else WHITE

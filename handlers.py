@@ -63,18 +63,47 @@ class BoardRenderer:
         return "\n".join(lines)
     
     @staticmethod
-    def create_move_keyboard(engine: CheckersEngine, selected_pos: Optional[int] = None, move_count: int = 1) -> InlineKeyboardMarkup:
+    def create_move_keyboard(engine: CheckersEngine, selected_pos: Optional[int] = None, 
+                            move_count: int = 1, pending_capture: dict = None) -> InlineKeyboardMarkup:
         """
         Create inline keyboard showing the actual board as clickable buttons.
         
+        If pending_capture is set: only show continuation captures from that position
         If selected_pos is None: highlight pieces that can move (green)
         If selected_pos is set: highlight selected piece and show possible destinations
         """
         buttons = []
         
-        # Get legal moves for highlighting
-        legal_moves = engine.get_legal_moves(engine.current_turn)
-        movable_positions = set(move.from_pos for move in legal_moves)
+        # Handle pending capture (must continue capturing)
+        if pending_capture:
+            # Only show single-hop captures from the pending position
+            legal_moves = engine.find_single_hop_captures(pending_capture["pos"])
+            movable_positions = {pending_capture["pos"]}
+            selected_pos = pending_capture["pos"]  # Auto-select the piece
+        else:
+            # Normal mode: get all legal moves but use single-hop for captures
+            all_legal_moves = engine.get_legal_moves(engine.current_turn)
+            
+            # Separate captures from regular moves
+            capture_positions = set()
+            regular_move_positions = set()
+            
+            for move in all_legal_moves:
+                if move.captures:
+                    capture_positions.add(move.from_pos)
+                else:
+                    regular_move_positions.add(move.from_pos)
+            
+            # If any captures available, ONLY show captures (mandatory)
+            if capture_positions:
+                movable_positions = capture_positions
+                # Get single-hop captures for these positions
+                legal_moves = []
+                for pos in capture_positions:
+                    legal_moves.extend(engine.find_single_hop_captures(pos))
+            else:
+                movable_positions = regular_move_positions
+                legal_moves = [m for m in all_legal_moves if not m.captures]
         
         # If a piece is selected, get its possible moves
         selected_destinations = set()
@@ -100,10 +129,9 @@ class BoardRenderer:
                     label = "🎯"
                 elif piece != 0:
                     # Regular piece (clickable or not)
-                    # Remove padding spaces to prevent horizontal cutoff in 8x8 grid
                     label = BoardRenderer._get_piece_emoji(piece)
                 else:
-                    # Empty square - use Braille pattern blank for consistent height
+                    # Empty square - use Braille pattern blank
                     label = "⠀"
                 
                 # Determine callback data
@@ -123,7 +151,13 @@ class BoardRenderer:
         
         # Add control buttons
         control_buttons = []
-        if selected_pos is not None:
+        
+        # Continuation indicator
+        if pending_capture:
+            # Show mandatory continuation message
+            buttons.insert(0, [InlineKeyboardButton("⚡ Продовжуйте бити!", callback_data="noop_continue")])
+        
+        if selected_pos is not None and not pending_capture:
             control_buttons.append(InlineKeyboardButton("« Скасувати", callback_data="back"))
             
         # Specific button based on game stage
@@ -153,9 +187,10 @@ class BoardRenderer:
 class GameHandlers:
     """Telegram bot command and callback handlers."""
     
-    def __init__(self, repository: GameRepository, rating_system=None):
+    def __init__(self, repository: GameRepository, rating_system=None, game_data_repo=None):
         self.repo = repository
         self.rating_system = rating_system
+        self.game_data_repo = game_data_repo
     
     def _get_game_state(self, chat_id: int = None, message_id: int = None, inline_message_id: str = None) -> Optional[dict]:
         """
@@ -407,7 +442,10 @@ class GameHandlers:
                     "created_at": now,
                     "last_activity": now,
                     "is_inline": True,
-                    "inline_message_id": inline_message_id
+                    "inline_message_id": inline_message_id,
+                    "move_history": [],
+                    "initial_board": engine.board.copy(),
+                    "pending_capture": None
                 }
                 
                 # Save inline game
@@ -475,7 +513,10 @@ class GameHandlers:
             "white_player_name": user.first_name,
             "white_player_username": user.username,
             "created_at": now,
-            "last_activity": now
+            "last_activity": now,
+            "move_history": [],
+            "initial_board": engine.board.copy(),
+            "pending_capture": None
         }
         
         # Save to Redis
@@ -572,7 +613,10 @@ class GameHandlers:
             "created_at": now,
             "last_activity": now,
             "is_private_match": True,
-            "challenger_chat_id": invite_info["challenger_chat_id"]
+            "challenger_chat_id": invite_info["challenger_chat_id"],
+            "move_history": [],
+            "initial_board": engine.board.copy(),
+            "pending_capture": None
         }
         
         # For private matches, we need to send board messages to BOTH players
@@ -584,7 +628,7 @@ class GameHandlers:
             board_text = BoardRenderer.render(engine.board)
             players_msg = self._get_players_message(game_state)
             turn_msg = self._get_turn_message(game_state)
-            keyboard = BoardRenderer.create_move_keyboard(engine, move_count=engine.move_count)
+            keyboard = BoardRenderer.create_move_keyboard(engine, move_count=engine.move_count, pending_capture=game_state.get("pending_capture"))
             
             game_message_text = f"{players_msg}\n\n{board_text}\n\n{turn_msg}"
             
@@ -747,7 +791,7 @@ class GameHandlers:
         board_text = BoardRenderer.render(engine.board)
         turn_msg = self._get_turn_message(game_state)
         
-        keyboard = BoardRenderer.create_move_keyboard(engine, selected_pos, engine.move_count)
+        keyboard = BoardRenderer.create_move_keyboard(engine, selected_pos, engine.move_count, pending_capture=game_state.get("pending_capture"))
         message_text = f"{board_text}\n\n{turn_msg}\n\n✅ Обрано: позиція {selected_pos}"
         
         # Check if this is an inline message
@@ -875,8 +919,24 @@ class GameHandlers:
             await query.answer(locales.ERROR_INVALID_MOVE, show_alert=True)
             return
         
+        # Record move in history before applying
+        move_record = {
+            "from": move_to_apply.from_pos,
+            "to": move_to_apply.to_pos,
+            "captures": move_to_apply.captures.copy() if move_to_apply.captures else [],
+            "board_before": engine.board.copy(),
+            "player": "red" if engine.current_turn == RED else "white"
+        }
+        game_state.setdefault("move_history", []).append(move_record)
+        
         # Apply move
         engine.apply_move(move_to_apply)
+        
+        # Check if this was a capture and if player must continue
+        must_continue = False
+        if move_to_apply.captures:
+            # Check if more captures are mandatory from landing position
+            must_continue = engine.must_continue_capturing(move_to_apply.to_pos)
         
         # Check for winner
         winner = engine.check_winner()
@@ -908,11 +968,38 @@ class GameHandlers:
             else:
                 win_msg = locales.WINNER.format(name=winner_name)
             
+            # Save completed game for replay
+            game_id = str(uuid.uuid4())[:8]
+            completed_game_data = {
+                "game_id": game_id,
+                "red_player_id": game_state["red_player_id"],
+                "red_player_name": game_state["red_player_name"],
+                "white_player_id": game_state["white_player_id"],
+                "white_player_name": game_state["white_player_name"],
+                "winner_id": winner_id,
+                "winner_name": winner_name,
+                "winner_color": "red" if winner == RED else "white",
+                "initial_board": game_state.get("initial_board", CheckersEngine.init_board()),
+                "move_history": game_state.get("move_history", []),
+                "final_board": engine.board.copy(),
+                "completed_at": datetime.utcnow().isoformat()
+            }
+            completed_at = completed_game_data["completed_at"]
+            self.game_data_repo.save_completed_game(completed_game_data)
+            # Add reference for both players
+            self.game_data_repo.add_user_game_reference(game_state["red_player_id"], game_id, completed_at)
+            self.game_data_repo.add_user_game_reference(game_state["white_player_id"], game_id, completed_at)
+            
             # keyboard = InlineKeyboardMarkup([[
             #     InlineKeyboardButton(locales.BTN_NEW_GAME, callback_data="new_game")
             # ]])
             
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("📺 Переглянути гру", callback_data=f"replay_{game_id}_0")
+            ]])
+            
             final_message = f"{board_text}\n\n{win_msg}"
+
             
             # Check if this is an inline message
             if inline_message_id:
@@ -920,7 +1007,7 @@ class GameHandlers:
                     await context.bot.edit_message_text(
                         inline_message_id=inline_message_id,
                         text=final_message,
-                        reply_markup=None
+                        reply_markup=keyboard
                     )
                 except Exception:
                     pass  # Ignore errors
@@ -934,7 +1021,7 @@ class GameHandlers:
                         chat_id=game_state["opponent_chat_id"],
                         message_id=game_state["opponent_message_id"],
                         text=final_message,
-                        reply_markup=None
+                        reply_markup=keyboard
                     )
                 except Exception:
                     pass  # Ignore errors
@@ -945,7 +1032,7 @@ class GameHandlers:
                         chat_id=game_state["challenger_chat_id"],
                         message_id=game_state["challenger_message_id"],
                         text=final_message,
-                        reply_markup=None
+                        reply_markup=keyboard
                     )
                 except Exception:
                     pass  # Ignore errors
@@ -957,17 +1044,30 @@ class GameHandlers:
                 # Regular group chat
                 await query.edit_message_text(
                     final_message,
-                    reply_markup=None
+                    reply_markup=keyboard
                 )
                 
                 # Delete game from Redis
                 self.repo.delete_game(chat_id, message_id)
         else:
-            # Update game state
+            # Game continues - update state
             game_state["board"] = engine.board
-            game_state["current_turn"] = engine.current_turn
             game_state["move_count"] = engine.move_count
             game_state["last_activity"] = datetime.utcnow().isoformat()
+            
+            # Handle pending capture (mandatory continuation)
+            if must_continue:
+                # Set pending capture - turn does NOT switch
+                game_state["pending_capture"] = {
+                    "pos": move_to_apply.to_pos,
+                    "must_continue": True
+                }
+                # Keep current_turn the same
+                game_state["current_turn"] = engine.current_turn
+            else:
+                # Clear pending capture and switch turns normally
+                game_state["pending_capture"] = None
+                game_state["current_turn"] = engine.current_turn
             
             # Check if this is an inline message
             if inline_message_id:
@@ -1641,7 +1741,7 @@ class GameHandlers:
         board_text = BoardRenderer.render(engine.board)
         players_msg = self._get_players_message(game_state)
         turn_msg = self._get_turn_message(game_state)
-        keyboard = BoardRenderer.create_move_keyboard(engine, move_count=engine.move_count)
+        keyboard = BoardRenderer.create_move_keyboard(engine, move_count=engine.move_count, pending_capture=game_state.get("pending_capture"))
         
         message_text = f"{players_msg}\n\n{board_text}\n\n{turn_msg}"
         
@@ -1696,7 +1796,7 @@ class GameHandlers:
         board_text = BoardRenderer.render(engine.board)
         players_msg = self._get_players_message(game_state)
         turn_msg = self._get_turn_message(game_state)
-        keyboard = BoardRenderer.create_move_keyboard(engine, move_count=engine.move_count)
+        keyboard = BoardRenderer.create_move_keyboard(engine, move_count=engine.move_count, pending_capture=game_state.get("pending_capture"))
         
         message_text = f"{players_msg}\n\n{board_text}\n\n{turn_msg}"
         
@@ -1853,7 +1953,133 @@ class GameHandlers:
         else:
             await message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
 
+    # ============ Game Replay Handlers ============
+    
+    async def replay_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /checkersreplay command - show list of recent games for replay."""
+        user = update.effective_user
+        
+        # Get user's completed games
+        game_ids = self.game_data_repo.get_user_completed_games(user.id, limit=10)
+        
+        if not game_ids:
+            await update.message.reply_text(
+                "📺 <b>Історія ігор</b>\n\n"
+                "У вас ще немає завершених ігор для перегляду.",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Build list of games
+        buttons = []
+        text = "📺 <b>Історія ваших ігор</b>\n\n"
+        text += "Оберіть гру для перегляду:\n\n"
+        
+        for i, game_id in enumerate(game_ids, 1):
+            game_data = self.game_data_repo.get_completed_game(game_id)
+            if game_data:
+                opponent_name = (game_data["white_player_name"] 
+                               if game_data["red_player_id"] == user.id 
+                               else game_data["red_player_name"])
+                result = "🏆" if game_data["winner_id"] == user.id else "❌"
+                move_count = len(game_data.get("move_history", []))
+                
+                text += f"{i}. {result} vs {opponent_name} ({move_count} ходів)\n"
+                buttons.append([
+                    InlineKeyboardButton(
+                        f"{result} vs {opponent_name}", 
+                        callback_data=f"replay_{game_id}_0"
+                    )
+                ])
+        
+        keyboard = InlineKeyboardMarkup(buttons)
+        await update.message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
+    
+    async def replay_game_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle replay navigation - show board at specific move."""
+        query = update.callback_query
+        await query.answer()
+        
+        # Parse callback: replay_{game_id}_{move_number}
+        parts = query.data.split("_")
+        if len(parts) != 3:
+            await query.answer("❌ Неправильний формат", show_alert=True)
+            return
+        
+        game_id = parts[1]
+        move_num = int(parts[2])
+        
+        # Get game data
+        game_data = self.game_data_repo.get_completed_game(game_id)
+        if not game_data:
+            await query.answer("❌ Гру не знайдено", show_alert=True)
+            return
+        
+        move_history = game_data.get("move_history", [])
+        total_moves = len(move_history)
+        
+        # Get board state at this move
+        if move_num == 0:
+            # Initial board
+            board = game_data.get("initial_board", CheckersEngine.init_board())
+            move_info = "🎬 Початкова позиція"
+        elif move_num <= total_moves:
+            # Board AFTER move (move_num - 1)
+            move_record = move_history[move_num - 1]
+            board = move_record.get("board_before", CheckersEngine.init_board())
+            
+            # Actually we need to show the board AFTER the move
+            # So we need to get the next move's board_before, or final_board if last move
+            if move_num < total_moves:
+                board = move_history[move_num].get("board_before", board)
+            else:
+                board = game_data.get("final_board", board)
+            
+            player_color = "🔴" if move_record["player"] == "red" else "⚪"
+            from_pos = move_record["from"]
+            to_pos = move_record["to"]
+            captures = move_record.get("captures", [])
+            capture_text = f" (x{len(captures)})" if captures else ""
+            move_info = f"Хід {move_num}: {player_color} {from_pos}→{to_pos}{capture_text}"
+        else:
+            board = game_data.get("final_board", CheckersEngine.init_board())
+            move_info = "🏁 Фінальна позиція"
+        
+        # Render board
+        board_text = BoardRenderer.render(board)
+        
+        # Game info
+        info_text = (
+            f"📺 <b>Перегляд гри</b>\n"
+            f"🔴 {game_data['red_player_name']} vs ⚪ {game_data['white_player_name']}\n"
+            f"🏆 Переможець: {game_data['winner_name']}\n\n"
+            f"{board_text}\n\n"
+            f"{move_info}\n"
+            f"[{move_num}/{total_moves}]"
+        )
+        
+        # Navigation buttons
+        nav_buttons = []
+        if move_num > 0:
+            nav_buttons.append(InlineKeyboardButton("⏮️", callback_data=f"replay_{game_id}_0"))
+            nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"replay_{game_id}_{move_num - 1}"))
+        if move_num < total_moves:
+            nav_buttons.append(InlineKeyboardButton("▶️", callback_data=f"replay_{game_id}_{move_num + 1}"))
+            nav_buttons.append(InlineKeyboardButton("⏭️", callback_data=f"replay_{game_id}_{total_moves}"))
+        
+        keyboard = InlineKeyboardMarkup([nav_buttons]) if nav_buttons else None
+        
+        try:
+            await query.edit_message_text(
+                info_text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass  # Ignore "Message is not modified" errors
+
     # ============ Inline Mode Handlers ============
+
     
     async def inline_query_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle inline queries when user types @botname."""
