@@ -268,6 +268,58 @@ class GameHandlers:
             "📺 Перегляд історії ігор тимчасово недоступний. Спробуйте пізніше."
         )
 
+    async def inline_query_handler(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """Handle inline queries (currently used for sharing invite codes)."""
+
+        query = update.inline_query
+        query_text = (query.query or "").strip()
+
+        # If the inline query is empty, gently discourage inline usage for now
+        if not query_text:
+            results = [
+                InlineQueryResultArticle(
+                    id=str(uuid.uuid4()),
+                    title="Надішліть код запрошення",
+                    description=(
+                        "Створіть запрошення у приваті з ботом та вкажіть код тут, "
+                        "щоб поділитися ним у чаті."
+                    ),
+                    input_message_content=InputTextMessageContent(
+                        "Щоб поділитися запрошенням, спочатку створіть код у меню бота."
+                    ),
+                )
+            ]
+            await query.answer(results, cache_time=0, is_personal=True)
+            return
+
+        # Provide a simple inline share message with the supplied code
+        share_text = (
+            "🎲 Гра в шашки!\n"
+            f"Код запрошення: {query_text}\n"
+            "Приєднуйтесь через /join <код>."
+        )
+
+        results = [
+            InlineQueryResultArticle(
+                id=str(uuid.uuid4()),
+                title=f"Поділитися кодом {query_text}",
+                description="Надіслати запрошення на гру",
+                input_message_content=InputTextMessageContent(share_text),
+            )
+        ]
+
+        await query.answer(results, cache_time=0, is_personal=True)
+
+    async def chosen_inline_result_handler(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """Handle selection of inline results (currently a no-op)."""
+
+        result = update.chosen_inline_result
+        logger.info("Inline result chosen: %s", result)
+
     async def join_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Join an invite by code (if created via the menu)."""
         message = update.effective_message
