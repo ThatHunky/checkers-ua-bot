@@ -95,11 +95,17 @@ class BoardRenderer:
         
         # Handle pending capture (must continue capturing)
         if pending_capture:
-            # Only show single-hop captures from the pending position
-            legal_moves = engine.find_single_hop_captures(pending_capture["pos"])
-            movable_positions = {pending_capture["pos"]}
-            selected_pos = pending_capture["pos"]  # Auto-select the piece
-        else:
+            pending_pos = pending_capture.get("pos")
+            # If no follow-up captures remain, fall back to normal selection
+            if not engine.must_continue_capturing(pending_pos):
+                pending_capture = None
+            else:
+                # Only show single-hop captures from the pending position
+                legal_moves = engine.find_single_hop_captures(pending_pos)
+                movable_positions = {pending_pos}
+                selected_pos = pending_pos  # Auto-select the piece
+
+        if not pending_capture:
             # Normal mode: get all legal moves but use single-hop for captures
             all_legal_moves = engine.get_legal_moves(engine.current_turn)
             
