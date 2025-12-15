@@ -2148,22 +2148,31 @@ class GameHandlers:
 
         edit = bool(update.callback_query)
         if update.callback_query:
-            await update.callback_query.answer()
+            query = update.callback_query
+            await query.answer()
+
+            if query.data == MENU_MAIN:
+                await self.show_main_menu(update, context)
+                return
 
         await self._send_leaderboard(message, page=0, edit=edit)
-    
+
     async def ratings_page_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle leaderboard page navigation."""
         query = update.callback_query
         await query.answer()
-        
+
         if not self.rating_system:
             return
-        
+
+        if query.data == MENU_MAIN:
+            await self.show_main_menu(update, context)
+            return
+
         # Parse page number from callback data: ratings_page_N
         _, _, page_str = query.data.split("_")
         page = int(page_str)
-        
+
         await self._send_leaderboard(query.message, page=page, edit=True)
     
     async def _send_leaderboard(self, message, page: int = 0, edit: bool = False):
@@ -2207,8 +2216,10 @@ class GameHandlers:
             buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"ratings_page_{page - 1}"))
         if page < total_pages - 1:
             buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"ratings_page_{page + 1}"))
-        
-        keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
+
+        rows = [buttons] if buttons else []
+        rows.append([InlineKeyboardButton(locales.BTN_BACK_TO_MENU, callback_data=MENU_MAIN)])
+        keyboard = InlineKeyboardMarkup(rows)
         
         if edit:
             await message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
