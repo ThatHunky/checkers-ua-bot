@@ -222,6 +222,144 @@ class GameHandlers:
     def _is_private_chat(chat) -> bool:
         return chat is None or getattr(chat, "type", None) == "private"
 
+    def _get_game_state(self, chat_id: int = None, message_id: int = None, inline_message_id: str = None):
+        """Retrieve game state from repository for regular or inline games."""
+        if inline_message_id:
+            return self.repo.get_inline_game(inline_message_id)
+        if chat_id is not None and message_id is not None:
+            return self.repo.get_game(chat_id, message_id)
+        return None
+
+    async def select_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle piece selection and show available moves."""
+        query = update.callback_query
+        await query.answer()
+
+        inline_message_id = query.inline_message_id
+
+        if inline_message_id:
+            game_state = self._get_game_state(inline_message_id=inline_message_id)
+            if not game_state:
+                await query.answer(locales.ERROR_NO_GAME, show_alert=True)
+                return
+            chat_id = message_id = None
+        else:
+            if not query.message or not query.message.chat:
+                await query.answer("Помилка: не вдалося визначити чат", show_alert=True)
+                return
+            chat_id = query.message.chat.id
+            message_id = query.message.message_id
+            game_state = self._get_game_state(chat_id, message_id)
+
+            if not game_state:
+                await query.edit_message_text(locales.ERROR_NO_GAME)
+                return
+
+        engine = CheckersEngine()
+        engine.set_board_state({
+            "board": game_state["board"],
+            "current_turn": game_state["current_turn"],
+            "move_count": game_state.get("move_count", 0)
+        })
+
+        user_id = query.from_user.id
+        if user_id != game_state["red_player_id"] and user_id != game_state["white_player_id"]:
+            await query.answer("❌ Ви не є гравцем у цій грі!", show_alert=True)
+            return
+
+        current_player_id = game_state["red_player_id"] if engine.current_turn == RED else game_state["white_player_id"]
+        if user_id != current_player_id:
+            await query.answer(locales.ERROR_NOT_YOUR_TURN, show_alert=True)
+            return
+
+        pending_capture = game_state.get("pending_capture")
+        try:
+            from_pos = int(query.data.split("_")[1])
+        except Exception:
+            await query.answer(locales.ERROR_INVALID_MOVE, show_alert=True)
+            return
+
+        if pending_capture and pending_capture.get("must_continue") and from_pos != pending_capture.get("pos"):
+            await query.answer("⚡ Ви повинні продовжити бити цією фігурою!", show_alert=True)
+            return
+
+        piece_at_from = engine.board[from_pos]
+        piece_color = engine.get_piece_color(piece_at_from)
+
+        if piece_color != engine.current_turn:
+            await query.answer("❌ Ви не можете рухати фігуру суперника!", show_alert=True)
+            return
+
+        if pending_capture:
+            legal_moves = engine.find_single_hop_captures(from_pos)
+        else:
+            legal_moves = [m for m in engine.get_legal_moves(engine.current_turn) if m.from_pos == from_pos]
+
+        if not legal_moves:
+            await query.answer(locales.ERROR_INVALID_MOVE, show_alert=True)
+            return
+
+        if inline_message_id:
+            await self._update_inline_game_message(context.bot, inline_message_id, engine, game_state, selected_pos=from_pos)
+        else:
+            await self._update_game_message(query.message, engine, game_state, context, selected_pos=from_pos)
+
+    async def move_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle executing a move selection."""
+        query = update.callback_query
+        await query.answer()
+
+        inline_message_id = query.inline_message_id
+
+        if inline_message_id:
+            game_state = self._get_game_state(inline_message_id=inline_message_id)
+            if not game_state:
+                await query.answer(locales.ERROR_NO_GAME, show_alert=True)
+                return
+            chat_id = message_id = None
+        else:
+            if not query.message or not query.message.chat:
+                await query.answer("Помилка: не вдалося визначити чат", show_alert=True)
+                return
+            chat_id = query.message.chat.id
+            message_id = query.message.message_id
+            game_state = self._get_game_state(chat_id, message_id)
+
+            if not game_state:
+                await query.edit_message_text(locales.ERROR_NO_GAME)
+                return
+
+        engine = CheckersEngine()
+        engine.set_board_state({
+            "board": game_state["board"],
+            "current_turn": game_state["current_turn"],
+            "move_count": game_state.get("move_count", 0)
+        })
+
+        user_id = query.from_user.id
+        if user_id != game_state["red_player_id"] and user_id != game_state["white_player_id"]:
+            await query.answer("❌ Ви не є гравцем у цій грі!", show_alert=True)
+            return
+
+        current_player_id = game_state["red_player_id"] if engine.current_turn == RED else game_state["white_player_id"]
+        if user_id != current_player_id:
+            await query.answer(locales.ERROR_NOT_YOUR_TURN, show_alert=True)
+            return
+
+        pending_capture = game_state.get("pending_capture")
+
+        try:
+            _, from_pos, to_pos = query.data.split("_")
+            from_pos = int(from_pos)
+            to_pos = int(to_pos)
+        except Exception:
+            await query.answer(locales.ERROR_INVALID_MOVE, show_alert=True)
+            return
+
+        if pending_capture and pending_capture.get("must_continue") and from_pos != pending_capture.get("pos"):
+            await query.answer("⚡ Ви повинні продовжити бити цією фігурою!", show_alert=True)
+            return
+
 
         # Verify the selected piece belongs to the current player
         piece_at_from = engine.board[from_pos]
@@ -1069,12 +1207,17 @@ class GameHandlers:
             parse_mode="HTML"
         )
     
-    async def _update_game_message(self, message, engine: CheckersEngine, game_state: dict, context: ContextTypes.DEFAULT_TYPE = None):
+    async def _update_game_message(self, message, engine: CheckersEngine, game_state: dict, context: ContextTypes.DEFAULT_TYPE = None, selected_pos: Optional[int] = None):
         """Update game message with current board and turn info."""
         board_text = BoardRenderer.render(engine.board)
         players_msg = self._get_players_message(game_state)
         turn_msg = self._get_turn_message(game_state)
-        keyboard = BoardRenderer.create_move_keyboard(engine, move_count=engine.move_count, pending_capture=game_state.get("pending_capture"))
+        keyboard = BoardRenderer.create_move_keyboard(
+            engine,
+            selected_pos=selected_pos,
+            move_count=engine.move_count,
+            pending_capture=game_state.get("pending_capture")
+        )
         
         message_text = f"{players_msg}\n\n{board_text}\n\n{turn_msg}"
         
@@ -1123,13 +1266,19 @@ class GameHandlers:
         bot,
         inline_message_id: str,
         engine: CheckersEngine,
-        game_state: dict
+        game_state: dict,
+        selected_pos: Optional[int] = None
     ):
         """Update inline message with current game state."""
         board_text = BoardRenderer.render(engine.board)
         players_msg = self._get_players_message(game_state)
         turn_msg = self._get_turn_message(game_state)
-        keyboard = BoardRenderer.create_move_keyboard(engine, move_count=engine.move_count, pending_capture=game_state.get("pending_capture"))
+        keyboard = BoardRenderer.create_move_keyboard(
+            engine,
+            selected_pos=selected_pos,
+            move_count=engine.move_count,
+            pending_capture=game_state.get("pending_capture")
+        )
         
         message_text = f"{players_msg}\n\n{board_text}\n\n{turn_msg}"
         
