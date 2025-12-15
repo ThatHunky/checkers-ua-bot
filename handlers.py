@@ -1201,16 +1201,32 @@ class GameHandlers:
             "move_count": game_state.get("move_count", 0)
         })
         
+        # Handle mandatory continuation captures
+        pending_capture = game_state.get("pending_capture")
+
+        if pending_capture:
+            pending_pos = pending_capture.get("pos")
+            # Guard against stale pending capture data that no longer has follow-up jumps
+            if not engine.must_continue_capturing(pending_pos):
+                pending_capture = None
+                game_state["pending_capture"] = None
+            elif from_pos != pending_pos:
+                await query.answer(locales.ERROR_INVALID_MOVE, show_alert=True)
+                return
+
         # Verify the selected piece belongs to the current player
         piece_at_from = engine.board[from_pos]
         piece_color = engine.get_piece_color(piece_at_from)
-        
+
         if piece_color != engine.current_turn:
             await query.answer("❌ Ви не можете рухати фігуру суперника!", show_alert=True)
             return
-        
+
         # Find and apply the move
-        legal_moves = engine.get_legal_moves(engine.current_turn)
+        if pending_capture:
+            legal_moves = engine.find_single_hop_captures(pending_capture["pos"])
+        else:
+            legal_moves = engine.get_legal_moves(engine.current_turn)
         move_to_apply = None
         
         for move in legal_moves:
@@ -2161,7 +2177,58 @@ class GameHandlers:
     async def noop_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle noop (no-operation) callbacks from non-interactive squares."""
         query = update.callback_query
-        # Just answer the callback without doing anything
+        data = query.data or ""
+
+        # If the continuation banner is tapped, remind the player to continue capturing
+        if data == "noop_continue":
+            await query.answer("⚡ Ви повинні продовжити бити цією фігурою!", show_alert=True)
+            return
+
+        # Only attempt detailed feedback for square-specific noop callbacks
+        if not data.startswith("noop_"):
+            await query.answer()
+            return
+
+        try:
+            _, pos_str = data.split("_", 1)
+            tapped_pos = int(pos_str)
+        except (ValueError, AttributeError):
+            await query.answer()
+            return
+
+        # Attempt to load game state to provide contextual guidance
+        inline_message_id = query.inline_message_id
+        game_state = None
+
+        if inline_message_id:
+            game_state = self._get_game_state(inline_message_id=inline_message_id)
+        elif query.message and query.message.chat:
+            game_state = self._get_game_state(query.message.chat.id, query.message.message_id)
+
+        if not game_state:
+            await query.answer()
+            return
+
+        engine = CheckersEngine()
+        engine.set_board_state({
+            "board": game_state["board"],
+            "current_turn": game_state["current_turn"],
+            "move_count": game_state.get("move_count", 0)
+        })
+
+        pending_capture = game_state.get("pending_capture")
+        if pending_capture and pending_capture.get("pos") != tapped_pos:
+            await query.answer("⚡ Ви повинні продовжити бити цією фігурою!", show_alert=True)
+            return
+
+        legal_moves = engine.get_legal_moves(engine.current_turn)
+        capture_positions = {move.from_pos for move in legal_moves if move.captures}
+
+        if capture_positions and tapped_pos not in capture_positions:
+            await query.answer("🎯 Доступний удар! Оберіть фігуру, що може бити.", show_alert=True)
+            return
+
+        # Default noop response
         await query.answer()
     
     async def myrating_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
