@@ -6,6 +6,7 @@ import json
 from typing import Optional
 from datetime import datetime
 import redis
+from redis.exceptions import ResponseError
 
 
 class GameRepository:
@@ -410,3 +411,250 @@ class GameRepository:
         except Exception as e:
             print(f"Error deleting inline challenge: {e}")
             return False
+
+    # ============ Matchmaking ============
+
+    def get_user_rating(self, user_id: int, default: int = 1200) -> int:
+        """Retrieve cached rating stored in a ticket, fallback to default."""
+        ticket = self.redis_client.hgetall(f"mm:ticket:{user_id}")
+        if ticket and ticket.get("rating"):
+            try:
+                return int(float(ticket["rating"]))
+            except (TypeError, ValueError):
+                return default
+        return default
+
+    def mm_enqueue(self, user_id: int, chat_id: int, mode: str, rating: int) -> dict:
+        """Add user to matchmaking queue. Returns ticket data."""
+        now = datetime.utcnow().isoformat()
+        ticket_key = f"mm:ticket:{user_id}"
+        queue_key = f"mm:queue:{mode}"
+
+        existing = self.redis_client.hgetall(ticket_key)
+        if existing and existing.get("status") == "queued":
+            return existing
+
+        ticket = {
+            "mode": mode,
+            "chat_id": str(chat_id),
+            "created_at": now,
+            "rating": str(rating),
+            "status": "queued",
+        }
+
+        pipe = self.redis_client.pipeline()
+        pipe.hset(ticket_key, mapping=ticket)
+        pipe.expire(ticket_key, 900)
+        pipe.zadd(queue_key, {user_id: rating})
+        pipe.execute()
+        return ticket
+
+    def mm_cancel(self, user_id: int) -> bool:
+        """Cancel matchmaking for a user if queued."""
+        ticket_key = f"mm:ticket:{user_id}"
+        ticket = self.redis_client.hgetall(ticket_key)
+        if not ticket:
+            return False
+
+        if ticket.get("status") != "queued":
+            self.redis_client.hset(ticket_key, "status", "cancelled")
+            return False
+
+        queue_key = f"mm:queue:{ticket['mode']}"
+        pipe = self.redis_client.pipeline()
+        pipe.zrem(queue_key, user_id)
+        pipe.hset(ticket_key, "status", "cancelled")
+        pipe.expire(ticket_key, 300)
+        pipe.execute()
+        return True
+
+    def mm_status(self, user_id: int) -> Optional[dict]:
+        """Return current matchmaking ticket if present."""
+        ticket = self.redis_client.hgetall(f"mm:ticket:{user_id}")
+        return ticket or None
+
+    def mm_cleanup_user(self, user_id: int):
+        """Remove user from queue and expire ticket."""
+        ticket = self.redis_client.hgetall(f"mm:ticket:{user_id}")
+        if not ticket:
+            return
+        queue_key = f"mm:queue:{ticket.get('mode', 'rated')}"
+        pipe = self.redis_client.pipeline()
+        pipe.zrem(queue_key, user_id)
+        pipe.delete(f"mm:ticket:{user_id}")
+        pipe.execute()
+
+    def mm_try_match(
+        self,
+        mode: str,
+        base_delta: int = 50,
+        step: int = 50,
+        step_seconds: int = 10,
+        max_delta: int = 400,
+    ):
+        """Try to find and atomically pair two users."""
+        queue_key = f"mm:queue:{mode}"
+        now = datetime.utcnow()
+
+        members = self.redis_client.zrange(queue_key, 0, -1, withscores=True)
+        best_pair = None
+        best_diff = None
+
+        tickets = {}
+        for user_str, score in members:
+            user_id = int(user_str)
+            ticket = self.redis_client.hgetall(f"mm:ticket:{user_id}")
+            if not ticket or ticket.get("status") != "queued":
+                continue
+            tickets[user_id] = {**ticket, "rating": float(score)}
+
+        user_ids = list(tickets.keys())
+        for i, uid in enumerate(user_ids):
+            t1 = tickets[uid]
+            created_at = datetime.fromisoformat(t1["created_at"])
+            wait_sec = (now - created_at).total_seconds()
+            allowed = min(max_delta, base_delta + int(wait_sec // step_seconds) * step)
+            for uid2 in user_ids[i + 1 :]:
+                t2 = tickets[uid2]
+                diff = abs(t1["rating"] - t2["rating"])
+                if diff <= allowed:
+                    if best_diff is None or diff < best_diff:
+                        best_diff = diff
+                        best_pair = (uid, uid2)
+
+        if not best_pair:
+            return None
+
+        uid_a, uid_b = best_pair
+        match_id = f"match:{uid_a}:{uid_b}:{int(now.timestamp())}"
+        ticket_a_key = f"mm:ticket:{uid_a}"
+        ticket_b_key = f"mm:ticket:{uid_b}"
+        match_key = f"mm:match:{match_id}"
+
+        script = """
+        local queue = KEYS[1]
+        local ticket_a = KEYS[2]
+        local ticket_b = KEYS[3]
+        local match_key = KEYS[4]
+
+        local user_a = ARGV[1]
+        local user_b = ARGV[2]
+        local mode = ARGV[3]
+        local created_at = ARGV[4]
+
+        if redis.call('hget', ticket_a, 'status') ~= 'queued' then
+            return nil
+        end
+        if redis.call('hget', ticket_b, 'status') ~= 'queued' then
+            return nil
+        end
+        if not redis.call('zscore', queue, user_a) then
+            return nil
+        end
+        if not redis.call('zscore', queue, user_b) then
+            return nil
+        end
+
+        redis.call('zrem', queue, user_a, user_b)
+        redis.call('hset', ticket_a, 'status', 'matched', 'opponent', user_b, 'match_id', match_key)
+        redis.call('hset', ticket_b, 'status', 'matched', 'opponent', user_a, 'match_id', match_key)
+        redis.call('hmset', match_key,
+            'user_a', user_a,
+            'user_b', user_b,
+            'mode', mode,
+            'created_at', created_at)
+        redis.call('expire', match_key, 120)
+        return {user_a, user_b, match_key}
+        """
+
+        try:
+            result = self.redis_client.eval(
+                script,
+                4,
+                queue_key,
+                ticket_a_key,
+                ticket_b_key,
+                match_key,
+                str(uid_a),
+                str(uid_b),
+                mode,
+                now.isoformat(),
+            )
+        except ResponseError:
+            # Fallback path for Redis backends without scripting (e.g., fakeredis)
+            if (
+                tickets.get(uid_a, {}).get("status") != "queued"
+                or tickets.get(uid_b, {}).get("status") != "queued"
+            ):
+                return None
+            pipe = self.redis_client.pipeline()
+            pipe.zrem(queue_key, uid_a, uid_b)
+            pipe.hset(ticket_a_key, mapping={"status": "matched", "opponent": uid_b, "match_id": match_key})
+            pipe.hset(ticket_b_key, mapping={"status": "matched", "opponent": uid_a, "match_id": match_key})
+            pipe.hset(match_key, mapping={"user_a": uid_a, "user_b": uid_b, "mode": mode, "created_at": now.isoformat()})
+            pipe.expire(match_key, 120)
+            pipe.execute()
+            result = [str(uid_a), str(uid_b), match_key]
+
+        if not result:
+            return None
+
+        return {
+            "users": [
+                {"user_id": uid_a, **tickets.get(uid_a, {})},
+                {"user_id": uid_b, **tickets.get(uid_b, {})},
+            ],
+            "match_id": match_key,
+            "mode": mode,
+        }
+
+    def mm_create_invite(self, user_id: int, chat_id: int, mode: str, code: str):
+        """Create an invite code entry."""
+        key = f"mm:invite:{code}"
+        data = {
+            "creator_user_id": str(user_id),
+            "creator_chat_id": str(chat_id),
+            "mode": mode,
+            "created_at": datetime.utcnow().isoformat(),
+            "status": "open",
+        }
+        self.redis_client.hset(key, mapping=data)
+        self.redis_client.expire(key, 1800)
+        return data
+
+    def mm_accept_invite(self, user_id: int, chat_id: int, code: str):
+        """Accept an invite if available, return pairing info."""
+        key = f"mm:invite:{code}"
+        invite = self.redis_client.hgetall(key)
+        if not invite or invite.get("status") != "open":
+            return None
+
+        script = """
+        local invite_key = KEYS[1]
+        local status = redis.call('hget', invite_key, 'status')
+        if status ~= 'open' then
+            return nil
+        end
+        redis.call('hset', invite_key, 'status', 'used', 'opponent_user_id', ARGV[1], 'opponent_chat_id', ARGV[2])
+        redis.call('expire', invite_key, 600)
+        return redis.call('hgetall', invite_key)
+        """
+        try:
+            result = self.redis_client.eval(script, 1, key, str(user_id), str(chat_id))
+        except ResponseError:
+            status = self.redis_client.hget(key, "status")
+            if status != "open":
+                return None
+            pipe = self.redis_client.pipeline()
+            pipe.hset(key, mapping={"status": "used", "opponent_user_id": user_id, "opponent_chat_id": chat_id})
+            pipe.expire(key, 600)
+            pipe.execute()
+            result = self.redis_client.hgetall(key)
+        if not result:
+            return None
+
+        if isinstance(result, dict):
+            return result
+
+        data = {result[i]: result[i + 1] for i in range(0, len(result), 2)}
+        return data

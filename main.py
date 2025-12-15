@@ -7,7 +7,7 @@ import os
 import logging
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from telegram import Update, BotCommand
+from telegram import Update, BotCommand, MenuButtonCommands
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -248,13 +248,15 @@ async def post_init(application: Application):
     # Set command hints (non-fatal if rate limited)
     try:
         commands = [
+            BotCommand("menu", "📋 Головне меню"),
             BotCommand("checkersplay", "🎮 Почати нову гру в Шашки"),
             BotCommand("checkersreplay", "📺 Історія моїх ігор"),
             BotCommand("myrating", "📊 Показати мій рейтинг"),
             BotCommand("ratings", "🏆 Таблиця лідерів"),
         ]
         await application.bot.set_my_commands(commands)
-        logger.info("Command hints set successfully")
+        await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+        logger.info("Command hints and menu button set successfully")
     except Exception as e:
         logger.warning(f"Could not set command hints (rate limited?): {e}")
 
@@ -312,16 +314,19 @@ def main():
 
     # Register timeout check job (runs every 60 seconds)
     application.job_queue.run_repeating(check_game_timeouts, interval=60, first=60)
+    application.job_queue.run_repeating(handlers.matchmaking_tick, interval=5, first=5)
     logger.info(f"Game timeout check enabled ({GAME_TIMEOUT_MINUTES} min timeout)")
 
     # Register command handlers
     application.add_handler(CommandHandler("start", handlers.start_bot_command))
+    application.add_handler(CommandHandler("menu", handlers.menu_command))
     application.add_handler(CommandHandler("checkersplay", handlers.start_command))
     application.add_handler(CommandHandler("checkersreplay", handlers.replay_command))
     application.add_handler(CommandHandler("cancel", handlers.cancel_command))
     application.add_handler(CommandHandler("forfeit", handlers.forfeit_command))
     application.add_handler(CommandHandler("myrating", handlers.myrating_command))
     application.add_handler(CommandHandler("ratings", handlers.ratings_command))
+    application.add_handler(CommandHandler("join", handlers.join_command))
     application.add_handler(
         CommandHandler("resetrankings", handlers.reset_rankings_command)
     )  # Hidden admin
@@ -338,6 +343,9 @@ def main():
     # Register callback handlers
     application.add_handler(
         CallbackQueryHandler(handlers.join_callback, pattern="^join")
+    )
+    application.add_handler(
+        CallbackQueryHandler(handlers.menu_callback, pattern="^(menu_|play_|invite_|join_code|mm_cancel|back_to_play)")
     )
     application.add_handler(
         CallbackQueryHandler(handlers.cancel_invite_callback, pattern="^cancel_invite$")

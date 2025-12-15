@@ -20,8 +20,25 @@ from telegram.ext import ContextTypes
 
 logger = logging.getLogger(__name__)
 
+MENU_MAIN = "menu_main"
+MENU_PLAY = "menu_play"
+MENU_PROFILE = "menu_profile"
+MENU_RATING = "menu_rating"
+MENU_SETTINGS = "menu_settings"
+MENU_HELP = "menu_help"
+MENU_ABOUT = "menu_about"
+
+PLAY_RATED = "play_rated"
+PLAY_CASUAL = "play_casual"
+INVITE_RATED = "invite_rated"
+INVITE_CASUAL = "invite_casual"
+JOIN_CODE = "join_code"
+MM_CANCEL = "mm_cancel"
+BACK_TO_PLAY = "back_to_play"
+
 from engine import CheckersEngine, WHITE, RED, Move
 from repository import GameRepository
+from matchmaking import MatchmakingService
 import locales
 
 
@@ -191,6 +208,40 @@ class GameHandlers:
         self.repo = repository
         self.rating_system = rating_system
         self.game_data_repo = game_data_repo
+        self.matchmaking = MatchmakingService(repository, rating_system)
+
+    # ======== Menus ========
+    def _main_menu_keyboard(self) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton(locales.MENU_PLAY, callback_data=MENU_PLAY)],
+                [InlineKeyboardButton(locales.MENU_PROFILE, callback_data=MENU_PROFILE)],
+                [InlineKeyboardButton(locales.MENU_RATING, callback_data=MENU_RATING)],
+                [InlineKeyboardButton(locales.MENU_SETTINGS, callback_data=MENU_SETTINGS)],
+                [InlineKeyboardButton(locales.MENU_HELP, callback_data=MENU_HELP)],
+                [InlineKeyboardButton(locales.MENU_ABOUT, callback_data=MENU_ABOUT)],
+            ]
+        )
+
+    def _play_menu_keyboard(self) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton(locales.PLAY_QUICK_RATED, callback_data=PLAY_RATED)],
+                [InlineKeyboardButton(locales.PLAY_QUICK_CASUAL, callback_data=PLAY_CASUAL)],
+                [InlineKeyboardButton(locales.PLAY_INVITE_RATED, callback_data=INVITE_RATED)],
+                [InlineKeyboardButton(locales.PLAY_INVITE_CASUAL, callback_data=INVITE_CASUAL)],
+                [InlineKeyboardButton(locales.PLAY_JOIN_CODE, callback_data=JOIN_CODE)],
+                [InlineKeyboardButton(locales.BTN_BACK, callback_data=MENU_MAIN)],
+            ]
+        )
+
+    def _searching_keyboard(self) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton(locales.SEARCHING_CANCEL, callback_data=MM_CANCEL)],
+                [InlineKeyboardButton(locales.SEARCHING_BACK, callback_data=BACK_TO_PLAY)],
+            ]
+        )
     
     def _get_game_state(self, chat_id: int = None, message_id: int = None, inline_message_id: str = None) -> Optional[dict]:
         """
@@ -224,22 +275,227 @@ class GameHandlers:
     async def start_bot_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command - register user and show welcome message."""
         user = update.effective_user
-        
+
         # Register user in the registry (enables receiving private game invites)
         self.repo.register_user(user.id, user.username, user.first_name)
-        
-        await update.message.reply_text(
-            f"👋 Привіт, <b>{user.first_name}</b>!\n\n"
-            "🎮 Я — бот для гри в <b>Українські Шашки</b>.\n\n"
-            "<b>Як грати:</b>\n"
-            "• У групі: /checkersplay — будь-хто може приєднатись\n"
-            "• В особистому чаті: <code>/checkersplay @username</code>\n\n"
-            "<b>Команди:</b>\n"
-            "• /myrating — ваш рейтинг\n"
-            "• /ratings — таблиця лідерів\n\n"
-            "Удачі! 🏆",
-            parse_mode="HTML"
+
+        await self.show_main_menu(update, context)
+
+    async def menu_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Explicit /menu command."""
+        await self.show_main_menu(update, context)
+
+    async def show_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Display the main menu via message or edit."""
+        text = locales.MENU_TITLE
+        keyboard = self._main_menu_keyboard()
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=keyboard)
+        else:
+            await update.effective_message.reply_text(text, reply_markup=keyboard)
+
+    async def show_play_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        text = locales.PLAY_TITLE
+        keyboard = self._play_menu_keyboard()
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=keyboard)
+        else:
+            await update.effective_message.reply_text(text, reply_markup=keyboard)
+
+    async def menu_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        data = query.data
+        if data == MENU_PLAY:
+            await self.show_play_menu(update, context)
+        elif data == MENU_MAIN or data == BACK_TO_PLAY:
+            await self.show_main_menu(update, context)
+        elif data == MENU_PROFILE:
+            await self.profile_menu(update, context)
+        elif data == MENU_RATING:
+            await self.ratings_command(update, context)
+        elif data == MENU_SETTINGS:
+            await self.settings_menu(update, context)
+        elif data == MENU_HELP:
+            await query.edit_message_text(locales.HELP_TEXT, parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(locales.BTN_BACK, callback_data=MENU_MAIN)]]))
+        elif data == MENU_ABOUT:
+            await query.edit_message_text(locales.ABOUT_TEXT, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(locales.BTN_BACK, callback_data=MENU_MAIN)]]))
+        elif data == PLAY_RATED:
+            await self.quick_match(update, context, "rated")
+        elif data == PLAY_CASUAL:
+            await self.quick_match(update, context, "casual")
+        elif data == INVITE_RATED:
+            await self.create_invite(update, context, "rated")
+        elif data == INVITE_CASUAL:
+            await self.create_invite(update, context, "casual")
+        elif data == JOIN_CODE:
+            await query.edit_message_text(
+                "Введіть код запрошення командою /join <код>",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(locales.BTN_BACK, callback_data=MENU_PLAY)]]),
+            )
+        elif data == MM_CANCEL:
+            await self.cancel_matchmaking(update, context)
+
+    async def cancel_matchmaking(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user = update.effective_user
+        self.matchmaking.cancel(user.id)
+        await update.callback_query.edit_message_text("Пошук скасовано", reply_markup=self._play_menu_keyboard())
+
+    async def quick_match(self, update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str):
+        user = update.effective_user
+        chat = update.effective_chat
+        # Check active game
+        if self.repo.get_user_game(user.id):
+            await update.callback_query.answer("Завершіть поточну гру спочатку", show_alert=True)
+            return
+
+        ticket = await self.matchmaking.enqueue(user.id, chat.id, mode, user.username)
+        text = f"{locales.SEARCHING_TITLE}\nРежим: {mode.upper()}\nРейтинг: {ticket.rating}"
+        keyboard = self._searching_keyboard()
+        await update.callback_query.edit_message_text(text, reply_markup=keyboard)
+        await self.matchmaking_tick(context)
+
+    async def create_invite(self, update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str):
+        user = update.effective_user
+        chat = update.effective_chat
+        invite = self.matchmaking.create_invite(user.id, chat.id, mode)
+        code = invite["code"]
+        keyboard = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton(locales.INVITE_SHARE, switch_inline_query=code)],
+                [InlineKeyboardButton(locales.INVITE_CANCEL, callback_data=MM_CANCEL)],
+                [InlineKeyboardButton(locales.BTN_BACK, callback_data=MENU_PLAY)],
+            ]
         )
+        await update.callback_query.edit_message_text(
+            locales.INVITE_CREATED.format(code=code), parse_mode="HTML", reply_markup=keyboard
+        )
+
+    async def join_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not context.args:
+            await update.message.reply_text("Формат: /join ABC123")
+            return
+        code = context.args[0].strip().upper()
+        user = update.effective_user
+        chat = update.effective_chat
+        invite = self.matchmaking.accept_invite(user.id, chat.id, code)
+        if not invite:
+            await update.message.reply_text("Запрошення не знайдено або вже використане.")
+            return
+        await update.message.reply_text("Готуємо гру...")
+        await self._start_invite_match(invite, context)
+
+    async def profile_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user = update.effective_user
+        rating = 1200
+        games = wins = losses = 0
+        if self.rating_system:
+            data = await self.rating_system.get_player(user.id, user.username)
+            rating = data.get("rating", rating)
+            games = data.get("games_played", games)
+            wins = data.get("wins", wins)
+            losses = data.get("losses", losses)
+        text = locales.PROFILE_TEMPLATE.format(
+            name=user.full_name, rating=rating, games=games, wins=wins, losses=losses
+        )
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(locales.BTN_BACK, callback_data=MENU_MAIN)]])
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=keyboard)
+        else:
+            await update.effective_message.reply_text(text, reply_markup=keyboard)
+
+    async def settings_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        keyboard = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton(locales.SETTINGS_NOTIFICATIONS, callback_data=MENU_MAIN)],
+                [InlineKeyboardButton(locales.SETTINGS_PREFER_RATED, callback_data=MENU_MAIN)],
+                [InlineKeyboardButton(locales.BTN_BACK, callback_data=MENU_MAIN)],
+            ]
+        )
+        if update.callback_query:
+            await update.callback_query.edit_message_text(locales.SETTINGS_TITLE, reply_markup=keyboard)
+        else:
+            await update.effective_message.reply_text(locales.SETTINGS_TITLE, reply_markup=keyboard)
+
+    async def matchmaking_tick(self, context: ContextTypes.DEFAULT_TYPE):
+        for mode in ("rated", "casual"):
+            pairing = self.matchmaking.try_match(mode)
+            if pairing:
+                await self._start_paired_game(pairing, context)
+
+    async def _start_invite_match(self, invite_data: dict, context: ContextTypes.DEFAULT_TYPE):
+        try:
+            opponent_id = int(invite_data.get("creator_user_id"))
+            opponent_chat = int(invite_data.get("creator_chat_id"))
+        except (TypeError, ValueError):
+            return
+        pairing = {
+            "mode": invite_data.get("mode", "rated"),
+            "users": [
+                {"user_id": opponent_id, "chat_id": invite_data.get("creator_chat_id"), "rating": 1200},
+                {"user_id": int(invite_data.get("opponent_user_id")), "chat_id": invite_data.get("opponent_chat_id"), "rating": 1200},
+            ],
+        }
+        await self._start_paired_game(pairing, context)
+
+    async def _start_paired_game(self, pairing: dict, context: ContextTypes.DEFAULT_TYPE):
+        users = pairing.get("users", [])
+        if len(users) < 2:
+            return
+        user_a, user_b = users[0], users[1]
+        bot = context.bot
+
+        # Fetch user info
+        chat_a = await bot.get_chat(user_a["user_id"])
+        chat_b = await bot.get_chat(user_b["user_id"])
+
+        engine = CheckersEngine()
+        now = datetime.utcnow().isoformat()
+
+        # Assign colors based on ratings (higher rated gets red)
+        red_player = chat_a if user_a.get("rating", 0) >= user_b.get("rating", 0) else chat_b
+        white_player = chat_b if red_player == chat_a else chat_a
+        red_id = red_player.id
+        white_id = white_player.id
+
+        game_state = {
+            "board": engine.board,
+            "current_turn": engine.current_turn,
+            "red_player_id": red_id,
+            "red_player_name": red_player.first_name,
+            "white_player_id": white_id,
+            "white_player_name": white_player.first_name,
+            "created_at": now,
+            "last_activity": now,
+            "move_history": [],
+            "initial_board": engine.board.copy(),
+            "pending_capture": None,
+            "is_private_match": True,
+        }
+
+        board_text = BoardRenderer.render(engine.board)
+        players_msg = self._get_players_message(game_state)
+        turn_msg = self._get_turn_message(game_state)
+        keyboard = BoardRenderer.create_move_keyboard(engine, move_count=engine.move_count, pending_capture=None)
+        message_text = f"{players_msg}\n\n{board_text}\n\n{turn_msg}"
+
+        try:
+            msg_a = await bot.send_message(chat_id=int(user_a["chat_id"]), text=message_text, reply_markup=keyboard, parse_mode="HTML")
+            msg_b = await bot.send_message(chat_id=int(user_b["chat_id"]), text=message_text, reply_markup=keyboard, parse_mode="HTML")
+        except Exception as e:
+            logger.error("Failed to deliver match start: %s", e)
+            self.repo.mm_cleanup_user(user_a["user_id"])
+            self.repo.mm_cleanup_user(user_b["user_id"])
+            return
+
+        game_state["challenger_chat_id"] = msg_a.chat_id
+        game_state["challenger_message_id"] = msg_a.message_id
+        game_state["opponent_chat_id"] = msg_b.chat_id
+        game_state["opponent_message_id"] = msg_b.message_id
+
+        self.repo.save_game(msg_a.chat_id, msg_a.message_id, game_state)
+        self.repo.save_game(msg_b.chat_id, msg_b.message_id, game_state)
+        self.repo.mm_cleanup_user(user_a["user_id"])
+        self.repo.mm_cleanup_user(user_b["user_id"])
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /checkersplay command - create a new game challenge."""
@@ -1884,27 +2140,33 @@ class GameHandlers:
     
     async def ratings_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /ratings command - show leaderboard with pagination."""
+        message = update.message or update.effective_message
+
         if not self.rating_system:
-            await update.message.reply_text("Система рейтингу недоступна.")
+            await message.reply_text("Система рейтингу недоступна.")
             return
-        
-        await self._send_leaderboard(update.message, page=0)
+
+        edit = bool(update.callback_query)
+        if update.callback_query:
+            await update.callback_query.answer()
+
+        await self._send_leaderboard(message, page=0, edit=edit, show_menu_back=True)
     
     async def ratings_page_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle leaderboard page navigation."""
         query = update.callback_query
         await query.answer()
-        
+
         if not self.rating_system:
             return
-        
+
         # Parse page number from callback data: ratings_page_N
         _, _, page_str = query.data.split("_")
         page = int(page_str)
-        
-        await self._send_leaderboard(query.message, page=page, edit=True)
-    
-    async def _send_leaderboard(self, message, page: int = 0, edit: bool = False):
+
+        await self._send_leaderboard(query.message, page=page, edit=True, show_menu_back=True)
+
+    async def _send_leaderboard(self, message, page: int = 0, edit: bool = False, show_menu_back: bool = False):
         """Send or edit leaderboard message with pagination."""
         PLAYERS_PER_PAGE = 15
         offset = page * PLAYERS_PER_PAGE
@@ -1913,12 +2175,15 @@ class GameHandlers:
             limit=PLAYERS_PER_PAGE, offset=offset
         )
         
+        back_row = [InlineKeyboardButton(locales.BTN_BACK, callback_data=MENU_MAIN)] if show_menu_back else []
+
         if not leaderboard and page == 0:
             text = "Ще немає рейтингу. Зіграйте першу гру!"
+            keyboard = InlineKeyboardMarkup([back_row]) if back_row else None
             if edit:
-                await message.edit_text(text)
+                await message.edit_text(text, reply_markup=keyboard)
             else:
-                await message.reply_text(text)
+                await message.reply_text(text, reply_markup=keyboard)
             return
         
         total_pages = (total_count + PLAYERS_PER_PAGE - 1) // PLAYERS_PER_PAGE
@@ -1945,9 +2210,15 @@ class GameHandlers:
             buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"ratings_page_{page - 1}"))
         if page < total_pages - 1:
             buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"ratings_page_{page + 1}"))
-        
-        keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
-        
+
+        rows = []
+        if buttons:
+            rows.append(buttons)
+        if back_row:
+            rows.append(back_row)
+
+        keyboard = InlineKeyboardMarkup(rows) if rows else None
+
         if edit:
             await message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
         else:
