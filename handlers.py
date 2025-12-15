@@ -2187,6 +2187,11 @@ class GameHandlers:
                 await self.show_main_menu(update, context)
                 return
 
+            # For callback queries coming from inline keyboards, fall back to editing the
+            # callback message (or inline message) directly when chat message is absent.
+            if not message:
+                message = query.message or query
+
         await self._send_leaderboard(message, page=0, edit=edit)
 
     async def ratings_page_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2205,7 +2210,8 @@ class GameHandlers:
         _, _, page_str = query.data.split("_")
         page = int(page_str)
 
-        await self._send_leaderboard(query.message, page=page, edit=True)
+        target = query.message or query
+        await self._send_leaderboard(target, page=page, edit=True)
     
     async def _send_leaderboard(self, message, page: int = 0, edit: bool = False):
         """Send or edit leaderboard message with pagination."""
@@ -2219,9 +2225,15 @@ class GameHandlers:
         if not leaderboard and page == 0:
             text = "Ще немає рейтингу. Зіграйте першу гру!"
             if edit:
-                await message.edit_text(text)
+                if hasattr(message, "edit_text"):
+                    await message.edit_text(text)
+                elif hasattr(message, "edit_message_text"):
+                    await message.edit_message_text(text)
             else:
-                await message.reply_text(text)
+                if hasattr(message, "reply_text"):
+                    await message.reply_text(text)
+                elif hasattr(message, "edit_message_text"):
+                    await message.edit_message_text(text)
             return
         
         total_pages = (total_count + PLAYERS_PER_PAGE - 1) // PLAYERS_PER_PAGE
@@ -2254,9 +2266,15 @@ class GameHandlers:
         keyboard = InlineKeyboardMarkup(rows)
         
         if edit:
-            await message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+            if hasattr(message, "edit_text"):
+                await message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+            elif hasattr(message, "edit_message_text"):
+                await message.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
         else:
-            await message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
+            if hasattr(message, "reply_text"):
+                await message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
+            elif hasattr(message, "edit_message_text"):
+                await message.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
 
     # ============ Game Replay Handlers ============
     
