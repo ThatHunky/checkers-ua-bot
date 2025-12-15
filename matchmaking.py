@@ -86,14 +86,34 @@ class MatchmakingService:
             max_delta=self.MAX_DELTA,
         )
 
-    def create_invite(self, user_id: int, chat_id: int, mode: str) -> dict:
+    def create_invite(
+        self,
+        user_id: int,
+        chat_id: int,
+        mode: str,
+        creator_username: Optional[str] = None,
+        creator_first_name: Optional[str] = None,
+    ) -> dict:
         code = self._generate_code()
-        data = self.repo.mm_create_invite(user_id, chat_id, mode, code)
+        data = self.repo.mm_create_invite(
+            user_id,
+            chat_id,
+            mode,
+            code,
+            creator_username=creator_username,
+            creator_first_name=creator_first_name,
+        )
         data["code"] = code
         return data
 
     def accept_invite(self, user_id: int, chat_id: int, code: str):
         return self.repo.mm_accept_invite(user_id, chat_id, code)
+
+    def get_invite(self, code: str) -> Optional[dict]:
+        return self.repo.mm_get_invite(code)
+
+    def cancel_invite(self, code: str) -> bool:
+        return self.repo.mm_cancel_invite(code)
 
     @staticmethod
     def _generate_code(length: int = 6) -> str:

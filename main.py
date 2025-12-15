@@ -353,6 +353,15 @@ def main():
         CallbackQueryHandler(handlers.menu_callback, pattern="^(menu_|play_|invite_|join_code|mm_cancel|back_to_play)")
     )
     application.add_handler(
+        CallbackQueryHandler(handlers.group_invite_mode_callback, pattern="^group_invite_(rated|casual)_\\d+$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(handlers.group_invite_join_callback, pattern="^group_invite_join_")
+    )
+    application.add_handler(
+        CallbackQueryHandler(handlers.group_invite_cancel_callback, pattern="^group_invite_cancel_")
+    )
+    application.add_handler(
         CallbackQueryHandler(handlers.cancel_invite_callback, pattern="^cancel_invite$")
     )
     application.add_handler(

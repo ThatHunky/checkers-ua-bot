@@ -4,12 +4,12 @@ Ukrainian localization strings for the Checkers bot.
 
 # Welcome and Challenge
 WELCOME = "👋 Вітаю! Хочете зіграти в Шашки?"
-CHALLENGE = "🔴 <b>Виклик!</b>\n\n{opponent} викликає на партію в Шашки!\nХто зіграє за Білих (⚪)?"
+CHALLENGE = "🔵 <b>Виклик!</b>\n\n{opponent} викликає на партію в Шашки!\nХто зіграє за Жовтих (🟡)?"
 JOIN_BTN = "⚔️ До бою!"
 
 # Game Status
-TURN_RED = "🔴 Хід Червоних\nГравець: {player_tag}"
-TURN_WHITE = "⚪ Хід Білих\nГравець: {player_tag}"
+TURN_RED = "🔵 Хід Синіх\nГравець: {player_tag}"
+TURN_WHITE = "🟡 Хід Жовтих\nГравець: {player_tag}"
 GAME_STARTED = "🎮 Гра почалася!\n\n{board}\n\n{turn_msg}"
 
 # Win/Loss
@@ -39,10 +39,10 @@ BTN_NEW_GAME = "🆕 Нова гра"
 # Board Pieces (for text rendering)
 PIECE_EMPTY_DARK = "⬛"
 PIECE_EMPTY_LIGHT = "⬜"
-PIECE_WHITE = "⚪"
-PIECE_WHITE_KING = "👑"
-PIECE_RED = "🔴"
-PIECE_RED_KING = "💎"
+PIECE_WHITE = "🟡"        # Yellow man
+PIECE_WHITE_KING = "💛"   # Yellow king (heart)
+PIECE_RED = "🔵"          # Blue man
+PIECE_RED_KING = "💙"     # Blue king (heart)
 
 # Matchmaking / Menu
 MENU_TITLE = "Головне меню"

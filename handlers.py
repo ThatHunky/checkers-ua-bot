@@ -6,6 +6,7 @@ import os
 import uuid
 import json
 import logging
+import html
 from datetime import datetime
 from typing import Optional, List
 from telegram import (
@@ -32,6 +33,8 @@ MENU_ABOUT = "menu_about"
 
 PLAY_RATED = "play_rated"
 PLAY_CASUAL = "play_casual"
+GROUP_INVITE_RATED = "group_invite_rated"
+GROUP_INVITE_CASUAL = "group_invite_casual"
 INVITE_RATED = "invite_rated"
 INVITE_CASUAL = "invite_casual"
 JOIN_CODE = "join_code"
@@ -198,14 +201,14 @@ class BoardRenderer:
     @staticmethod
     def _get_piece_emoji(piece: int) -> str:
         """Get emoji for a piece."""
-        if piece == 1:  # White man
-            return "⚪"
-        elif piece == 2:  # White king
-            return "🤍"  # White heart
-        elif piece == 3:  # Red man
-            return "🔴"
-        elif piece == 4:  # Red king
-            return "❤️"  # Red heart
+        if piece == 1:  # White man (yellow)
+            return locales.PIECE_WHITE
+        elif piece == 2:  # White king (yellow)
+            return locales.PIECE_WHITE_KING
+        elif piece == 3:  # Red man (blue)
+            return locales.PIECE_RED
+        elif piece == 4:  # Red king (blue)
+            return locales.PIECE_RED_KING
         return ""
 
 
@@ -263,11 +266,100 @@ class GameHandlers:
         chat = update.effective_chat
         message = update.effective_message
 
-        if not self._is_private_chat(chat):
-            await message.reply_text(locales.MENU_PRIVATE_ONLY)
-            return
+        if self._is_private_chat(chat):
+            await self._send_play_menu(message)
+        else:
+            await self._send_group_invite_menu(message, initiator_id=update.effective_user.id if update.effective_user else None)
 
-        await self._send_play_menu(message)
+    async def _start_game(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        red_user: dict,
+        white_user: dict,
+        is_private_match: bool = False,
+        mode: str = "rated",
+    ):
+        """Start a new game between two players."""
+        # Initialize engine
+        engine = CheckersEngine()
+        board_state = engine.board
+        first_turn = WHITE  # White moves first
+        
+        # Prepare game state
+        game_state = {
+            "board": board_state,
+            "current_turn": first_turn,
+            "red_player_id": int(red_user["user_id"]),
+            "red_player_name": red_user.get("username", "Red"),
+            "white_player_id": int(white_user["user_id"]),
+            "white_player_name": white_user.get("username", "White"),
+            "move_count": 0,
+            "created_at": datetime.utcnow().isoformat(),
+            "last_activity": datetime.utcnow().isoformat(),
+            "is_private_match": is_private_match,
+            "mode": mode or "rated",
+        }
+
+        # Render initial board
+        board_text = BoardRenderer.render(board_state)
+        keyboard = BoardRenderer.create_move_keyboard(engine, move_count=0)
+        
+        red_name = html.escape(game_state["red_player_name"])
+        white_name = html.escape(game_state["white_player_name"])
+        info_text = (
+            f"🎮 <b>Гра розпочалась!</b>\n\n"
+            f"🟡 {white_name} (ви ходите першими)\n"
+            f"🔵 {red_name}\n\n"
+            f"Хід жовтих."
+        )
+
+        if is_private_match:
+            try:
+                # Send to Red player
+                msg_red = await context.bot.send_message(
+                    chat_id=int(red_user["chat_id"]), 
+                    text=info_text, 
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML
+                )
+                game_state["challenger_chat_id"] = msg_red.chat_id
+                game_state["challenger_message_id"] = msg_red.message_id
+                
+                # Send to White player
+                msg_white = await context.bot.send_message(
+                    chat_id=int(white_user["chat_id"]),
+                    text=info_text,
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                game_state["opponent_chat_id"] = msg_white.chat_id
+                game_state["opponent_message_id"] = msg_white.message_id
+                
+                # Save game for both
+                self.repo.save_game(msg_red.chat_id, msg_red.message_id, game_state)
+                self.repo.save_game(msg_white.chat_id, msg_white.message_id, game_state)
+                
+            except Exception as e:
+                logger.error(f"Failed to start private match: {e}")
+                # Try to notify users of failure
+                for user in [red_user, white_user]:
+                    try:
+                        await context.bot.send_message(chat_id=int(user["chat_id"]), text="❌ Не вдалося розпочати гру.")
+                    except:
+                        pass
+        else:
+            # Group chat game (or single player play testing if we support that later)
+            # For now assume red_user's chat_id is the group chat id
+            try:
+                msg = await context.bot.send_message(
+                    chat_id=int(red_user["chat_id"]),
+                    text=info_text,
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML
+                )
+                self.repo.save_game(msg.chat_id, msg.message_id, game_state)
+            except Exception as e:
+                logger.error(f"Failed to start group game: {e}")
 
     async def replay_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show a list of recent completed games for the user."""
@@ -377,17 +469,60 @@ class GameHandlers:
             return
 
         code = args[0].strip().upper()
+        logger.info(
+            "[/join] user=%s chat=%s code=%s",
+            update.effective_user.id,
+            message.chat_id if message else None,
+            code,
+        )
+        invite = self.matchmaking.get_invite(code)
+        if not invite:
+            logger.info("[/join] invite not found code=%s", code)
+            await message.reply_text("❌ Запрошення не знайдено або вже використано.")
+            return
+
+        creator_chat_id = int(invite.get("creator_chat_id", "0") or 0)
+        creator_user_id = int(invite.get("creator_user_id", "0") or 0)
+
+        # Enforce same chat as invite creator (group/private)
+        if creator_chat_id and creator_chat_id != message.chat_id:
+            logger.info(
+                "[/join] chat mismatch code=%s user_chat=%s creator_chat=%s",
+                code,
+                message.chat_id,
+                creator_chat_id,
+            )
+            await message.reply_text("❌ Це запрошення створено в іншому чаті.")
+            return
+
+        # Prevent creator self-joining
+        if update.effective_user.id == creator_user_id:
+            logger.info(
+                "[/join] creator self-join blocked code=%s user=%s",
+                code,
+                update.effective_user.id,
+            )
+            await message.reply_text("❌ Ви не можете приєднатися до власного запрошення.")
+            return
+
         result = self.matchmaking.accept_invite(
             update.effective_user.id, message.chat_id, code
         )
         if not result:
+            logger.info("[/join] accept failed code=%s user=%s", code, update.effective_user.id)
             await message.reply_text("❌ Запрошення не знайдено або вже використано.")
             return
 
-        creator = result.get("creator_user_id")
+        creator_name = invite.get("creator_username") or invite.get("creator_first_name") or creator_user_id
+        logger.info(
+            "[/join] accepted code=%s user=%s creator=%s",
+            code,
+            update.effective_user.id,
+            creator_user_id,
+        )
         await message.reply_text(
             f"✅ Ви приєдналися до запрошення {code}. "
-            f"Створіть нову гру разом із користувачем {creator}."
+            f"Грайте разом із {creator_name}."
         )
 
     async def replay_game_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -423,7 +558,7 @@ class GameHandlers:
 
         header = (
             f"📺 Повтор гри {game_id}\n"
-            f"🔴 {game_data['red_player_name']} vs ⚪ {game_data['white_player_name']}"
+            f"🔵 {game_data['red_player_name']} vs 🟡 {game_data['white_player_name']}"
         )
 
         if step == total_steps:
@@ -504,10 +639,14 @@ class GameHandlers:
         elif data in {PLAY_RATED, PLAY_CASUAL}:
             mode = "rated" if data == PLAY_RATED else "casual"
             await self._start_matchmaking(query, mode)
-        elif data in {PLAY_INVITE_RATED, PLAY_INVITE_CASUAL}:
-            mode = "rated" if data == PLAY_INVITE_RATED else "casual"
+        elif data in {INVITE_RATED, INVITE_CASUAL}:
+            mode = "rated" if data == INVITE_RATED else "casual"
             code = self.matchmaking.create_invite(
-                query.from_user.id, query.message.chat_id, mode
+                query.from_user.id,
+                query.message.chat_id,
+                mode,
+                creator_username=query.from_user.username,
+                creator_first_name=query.from_user.first_name,
             )["code"]
             keyboard = InlineKeyboardMarkup(
                 [
@@ -570,19 +709,27 @@ class GameHandlers:
                 if not result:
                     break
 
+                # Pair found!
                 users = result.get("users", [])
-                for user in users:
-                    chat_id = int(user.get("chat_id", 0))
-                    if not chat_id:
-                        continue
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=(
-                            "✅ Знайдено суперника! "
-                            "Наразі автоматичний старт гри ще в розробці."
-                        ),
+                if len(users) == 2:
+                    # Randomly assign colors (or based on matchmaking logic if strict)
+                    # For now, just take the first as Red, second as White
+                    red_user = users[0]
+                    white_user = users[1]
+                    
+                    await self._start_game(
+                        context,
+                        red_user,
+                        white_user,
+                        is_private_match=True,
+                        mode=mode,
                     )
-                    self.matchmaking.cancel(int(user.get("user_id", 0)))
+                    
+                    self.matchmaking.cancel(int(red_user.get("user_id", 0)))
+                    self.matchmaking.cancel(int(white_user.get("user_id", 0)))
+                else:
+                    # Should be 2 users
+                     logger.warning("Matchmaking returned invalid number of users")
 
     # ------------------------------------------------------------------
     # Menu helper utilities
@@ -626,6 +773,235 @@ class GameHandlers:
             await message.edit_text(locales.PLAY_TITLE, reply_markup=keyboard)
         else:
             await message.reply_text(locales.PLAY_TITLE, reply_markup=keyboard)
+
+    async def _send_group_invite_menu(self, message, initiator_id: int, edit: bool = False):
+        """Show group invite mode selector; only the initiator may choose."""
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        locales.PLAY_QUICK_RATED, callback_data=f"{GROUP_INVITE_RATED}_{initiator_id}"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        locales.PLAY_QUICK_CASUAL, callback_data=f"{GROUP_INVITE_CASUAL}_{initiator_id}"
+                    )
+                ],
+            ]
+        )
+
+        prompt = "Обери режим для запрошення у цій групі"
+        if edit:
+            await message.edit_text(prompt, reply_markup=keyboard)
+        else:
+            await message.reply_text(prompt, reply_markup=keyboard)
+
+    async def group_invite_mode_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Create a group invite (rated or casual) from the group selector."""
+        query = update.callback_query
+        await query.answer()
+
+        parts = query.data.split("_")
+        if len(parts) != 4:
+            logger.info("[invite:create] bad payload data=%s", query.data)
+            await query.answer("Помилка даних.", show_alert=True)
+            return
+
+        _, _, mode, initiator_str = parts
+        try:
+            initiator_id = int(initiator_str)
+        except ValueError:
+            logger.info("[invite:create] bad initiator id data=%s", query.data)
+            await query.answer("Помилка даних.", show_alert=True)
+            return
+
+        if query.from_user.id != initiator_id:
+            await query.answer("Лише ініціатор може обрати режим.", show_alert=True)
+            return
+
+        chat = query.message.chat if query.message else None
+        if self._is_private_chat(chat):
+            await query.answer("Запрошення працюють у групах.", show_alert=True)
+            return
+
+        mode = "rated" if mode == "rated" else "casual"
+        logger.info(
+            "[invite:create] user=%s chat=%s mode=%s",
+            query.from_user.id,
+            chat.id if chat else None,
+            mode,
+        )
+        invite = self.matchmaking.create_invite(
+            query.from_user.id,
+            chat.id,
+            mode,
+            creator_username=query.from_user.username,
+            creator_first_name=query.from_user.first_name,
+        )
+        code = invite["code"]
+
+        text = (
+            "🤝 Запрошення на гру у цій групі\n"
+            f"Режим: {'Рейтинг' if mode == 'rated' else 'Без рейтингу'}\n"
+            f"Створив: {query.from_user.first_name}\n"
+            f"Код: {code} (можна /join {code})"
+        )
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "⚔️ Приєднатися", callback_data=f"group_invite_join_{code}"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "❌ Скасувати", callback_data=f"group_invite_cancel_{code}"
+                    )
+                ],
+            ]
+        )
+
+        try:
+            await query.message.edit_text(text, reply_markup=keyboard)
+        except Exception:
+            await query.message.reply_text(text, reply_markup=keyboard)
+
+    async def group_invite_join_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Accept a group invite and start a group game."""
+        query = update.callback_query
+        await query.answer()
+
+        data = query.data.replace("group_invite_join_", "", 1)
+        code = data.strip().upper()
+        logger.info(
+            "[invite:join] user=%s chat=%s code=%s",
+            query.from_user.id,
+            query.message.chat.id if query.message and query.message.chat else None,
+            code,
+        )
+
+        chat = query.message.chat if query.message else None
+        if self._is_private_chat(chat):
+            await query.answer("Приєднання доступне у групі.", show_alert=True)
+            return
+
+        invite = self.matchmaking.get_invite(code)
+        if not invite or invite.get("status") != "open":
+            logger.info("[invite:join] invite not open code=%s user=%s", code, query.from_user.id)
+            await query.answer("❌ Запрошення не знайдено або вже використано.", show_alert=True)
+            return
+
+        creator_chat_id = int(invite.get("creator_chat_id", "0") or 0)
+        creator_user_id = int(invite.get("creator_user_id", "0") or 0)
+
+        if creator_chat_id != chat.id:
+            logger.info(
+                "[invite:join] chat mismatch code=%s invite_chat=%s user_chat=%s",
+                code,
+                creator_chat_id,
+                chat.id,
+            )
+            await query.answer("❌ Це запрошення для іншої групи.", show_alert=True)
+            return
+
+        if query.from_user.id == creator_user_id:
+            logger.info("[invite:join] creator self-join blocked code=%s user=%s", code, query.from_user.id)
+            await query.answer("❌ Не можна приєднатись до власного запрошення.", show_alert=True)
+            return
+
+        mode = invite.get("mode", "rated")
+
+        # Atomically mark invite as used now
+        invite_used = self.matchmaking.accept_invite(query.from_user.id, chat.id, code)
+        if not invite_used:
+            logger.info("[invite:join] accept failed (race) code=%s user=%s", code, query.from_user.id)
+            await query.answer("❌ Запрошення вже використано.", show_alert=True)
+            return
+        logger.info(
+            "[invite:join] accepted code=%s creator=%s opponent=%s chat=%s mode=%s",
+            code,
+            creator_user_id,
+            query.from_user.id,
+            chat.id,
+            mode,
+        )
+
+        red_user = {
+            "user_id": creator_user_id,
+            "username": invite.get("creator_username") or invite.get("creator_first_name") or "Red",
+            "chat_id": chat.id,
+        }
+        white_user = {
+            "user_id": query.from_user.id,
+            "username": query.from_user.first_name or query.from_user.username or "White",
+            "chat_id": chat.id,
+        }
+
+        await self._start_game(
+            context,
+            red_user,
+            white_user,
+            is_private_match=False,
+            mode=mode,
+        )
+
+        try:
+            await query.message.edit_text(
+                f"✅ Пара знайдена! Режим: {'Рейтинг' if mode == 'rated' else 'Без рейтингу'}",
+                reply_markup=None,
+            )
+        except Exception:
+            pass
+
+    async def group_invite_cancel_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Cancel an open group invite (creator only)."""
+        query = update.callback_query
+        await query.answer()
+
+        data = query.data.replace("group_invite_cancel_", "", 1)
+        code = data.strip().upper()
+        logger.info(
+            "[invite:cancel] user=%s chat=%s code=%s",
+            query.from_user.id,
+            query.message.chat.id if query.message and query.message.chat else None,
+            code,
+        )
+
+        invite = self.matchmaking.get_invite(code)
+        if not invite:
+            logger.info("[invite:cancel] invite missing code=%s", code)
+            await query.answer("Запрошення вже неактивне.", show_alert=True)
+            return
+
+        creator_user_id = int(invite.get("creator_user_id", "0") or 0)
+        creator_chat_id = int(invite.get("creator_chat_id", "0") or 0)
+
+        if query.from_user.id != creator_user_id:
+            logger.info("[invite:cancel] not creator user=%s creator=%s code=%s", query.from_user.id, creator_user_id, code)
+            await query.answer("Лише автор може скасувати запрошення.", show_alert=True)
+            return
+
+        if query.message and query.message.chat and query.message.chat.id != creator_chat_id:
+            logger.info(
+                "[invite:cancel] chat mismatch code=%s creator_chat=%s user_chat=%s",
+                code,
+                creator_chat_id,
+                query.message.chat.id if query.message else None,
+            )
+            await query.answer("Це запрошення створене в іншій групі.", show_alert=True)
+            return
+
+        if not self.matchmaking.cancel_invite(code):
+            logger.info("[invite:cancel] already finished code=%s", code)
+            await query.answer("Запрошення вже завершено.", show_alert=True)
+            return
+        logger.info("[invite:cancel] cancelled code=%s by user=%s", code, query.from_user.id)
+
+        try:
+            await query.message.edit_text("🚫 Запрошення скасовано.", reply_markup=None)
+        except Exception:
+            pass
 
     async def _start_matchmaking(self, query, mode: str):
         ticket = await self.matchmaking.enqueue(
@@ -725,6 +1101,15 @@ class GameHandlers:
             await query.answer(locales.ERROR_INVALID_MOVE, show_alert=True)
             return
 
+        logger.info(
+            "[move:select] user=%s chat=%s pending=%s from=%s legal=%s",
+            user_id,
+            query.message.chat.id if query.message else None,
+            pending_capture,
+            from_pos,
+            len(legal_moves),
+        )
+
         if inline_message_id:
             await self._update_inline_game_message(context.bot, inline_message_id, engine, game_state, selected_pos=from_pos)
         else:
@@ -795,11 +1180,20 @@ class GameHandlers:
             await query.answer("❌ Ви не можете рухати фігуру суперника!", show_alert=True)
             return
 
-        # Find and apply the move
+        # Build legal move list consistent with capture UI (single-hop when captures exist)
         if pending_capture:
             legal_moves = engine.find_single_hop_captures(pending_capture["pos"])
         else:
-            legal_moves = engine.get_legal_moves(engine.current_turn)
+            all_moves = engine.get_legal_moves(engine.current_turn)
+            capture_positions = {m.from_pos for m in all_moves if m.captures}
+            if capture_positions:
+                # Must capture; restrict to single-hop captures from this piece
+                if from_pos not in capture_positions:
+                    await query.answer(locales.ERROR_INVALID_MOVE, show_alert=True)
+                    return
+                legal_moves = engine.find_single_hop_captures(from_pos)
+            else:
+                legal_moves = [m for m in all_moves if m.from_pos == from_pos]
         move_to_apply = None
         
         for move in legal_moves:
@@ -811,6 +1205,16 @@ class GameHandlers:
             await query.answer(locales.ERROR_INVALID_MOVE, show_alert=True)
             return
         
+        logger.info(
+            "[move:apply] user=%s chat=%s from=%s to=%s captures=%s pending_before=%s",
+            user_id,
+            query.message.chat.id if query.message else None,
+            from_pos,
+            to_pos,
+            move_to_apply.captures,
+            pending_capture,
+        )
+
         # Record move in history before applying
         move_record = {
             "from": move_to_apply.from_pos,
@@ -846,9 +1250,10 @@ class GameHandlers:
             loser_name = game_state["white_player_name"] if winner == RED else game_state["red_player_name"]
             
             board_text = BoardRenderer.render(engine.board)
+            mode = game_state.get("mode", "rated")
             
-            # Record rating changes if rating system available
-            if self.rating_system:
+            # Record rating changes only for rated games if rating system available
+            if self.rating_system and mode == "rated":
                 winner_data, loser_data = await self.rating_system.record_game(
                     winner_id, winner_name, loser_id, loser_name
                 )
@@ -1016,6 +1421,20 @@ class GameHandlers:
             if not game_state:
                 await query.edit_message_text(locales.ERROR_NO_GAME)
                 return
+
+        # Only active player of the game may cancel selection
+        user_id = query.from_user.id
+        if user_id != game_state.get("red_player_id") and user_id != game_state.get("white_player_id"):
+            await query.answer("❌ Ви не є гравцем у цій грі!", show_alert=True)
+            return
+
+        engine_turn = game_state.get("current_turn")
+        current_player_id = (
+            game_state.get("red_player_id") if engine_turn == RED else game_state.get("white_player_id")
+        )
+        if user_id != current_player_id:
+            await query.answer(locales.ERROR_NOT_YOUR_TURN, show_alert=True)
+            return
         
         # Load engine state
         engine = CheckersEngine()
@@ -1152,9 +1571,10 @@ class GameHandlers:
         })
         
         board_text = BoardRenderer.render(engine.board)
+        mode = game_state.get("mode", "rated")
         
-        # Record rating changes if rating system available
-        if self.rating_system:
+        # Record rating changes for rated games only
+        if self.rating_system and mode == "rated":
             winner_data, loser_data = await self.rating_system.record_game(
                 winner_id, winner_name, loser_id, loser_name
             )
@@ -1740,7 +2160,7 @@ class GameHandlers:
         red_tag = f'<a href="tg://user?id={red_player_id}">{red_player_name}</a>' if red_player_id else red_player_name
         white_tag = f'<a href="tg://user?id={white_player_id}">{white_player_name}</a>' if white_player_id else white_player_name
         
-        return f"🔴 {red_tag}  vs  ⚪ {white_tag}"
+        return f"🔵 {red_tag}  vs  🟡 {white_tag}"
     
     @staticmethod
     def _get_turn_message(game_state: dict) -> str:

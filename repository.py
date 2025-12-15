@@ -608,7 +608,15 @@ class GameRepository:
             "mode": mode,
         }
 
-    def mm_create_invite(self, user_id: int, chat_id: int, mode: str, code: str):
+    def mm_create_invite(
+        self,
+        user_id: int,
+        chat_id: int,
+        mode: str,
+        code: str,
+        creator_username: Optional[str] = None,
+        creator_first_name: Optional[str] = None,
+    ):
         """Create an invite code entry."""
         key = f"mm:invite:{code}"
         data = {
@@ -617,6 +625,8 @@ class GameRepository:
             "mode": mode,
             "created_at": datetime.utcnow().isoformat(),
             "status": "open",
+            "creator_username": creator_username or "",
+            "creator_first_name": creator_first_name or "",
         }
         self.redis_client.hset(key, mapping=data)
         self.redis_client.expire(key, 1800)
@@ -658,3 +668,21 @@ class GameRepository:
 
         data = {result[i]: result[i + 1] for i in range(0, len(result), 2)}
         return data
+
+    def mm_get_invite(self, code: str) -> Optional[dict]:
+        """Fetch invite metadata by code."""
+        key = f"mm:invite:{code}"
+        invite = self.redis_client.hgetall(key)
+        return invite or None
+
+    def mm_cancel_invite(self, code: str) -> bool:
+        """Cancel an open invite."""
+        key = f"mm:invite:{code}"
+        invite = self.redis_client.hgetall(key)
+        if not invite:
+            return False
+        if invite.get("status") != "open":
+            return False
+        self.redis_client.hset(key, mapping={"status": "cancelled"})
+        self.redis_client.expire(key, 300)
+        return True
