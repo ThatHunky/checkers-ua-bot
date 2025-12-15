@@ -1,48 +1,43 @@
-# Usage
+# Посібник користувача
 
-This document explains how to run and use the bot.
+## 🕹 Як почати гру
 
-Entrypoints
+Ви можете грати в шашки безпосередньо в чаті з ботом або додати його в групу.
 
-- `main.py` — typically used for webhooks / advanced setups
-- `main_polling.py` — run the bot in long-polling mode (useful for development)
+### Основні команди
 
-Run with virtualenv active:
+- `/start` - Запуск бота, відкриття головного меню.
+- `/menu` або надіслати "Меню" - Відкрити головне меню.
+- `/checkersplay` - Меню вибору режиму гри.
+- `/checkersreplay` - Переглянути історію своїх ігор.
+- `/myrating` - Переглянути свій поточний рейтинг та статистику.
+- `/ratings` - Відкрити таблицю лідерів (топ гравців).
 
-```bash
-# run in polling mode (development)
-python main_polling.py
+### Режими Гри
 
-# run a production/service mode (check your environment / webhook config)
-python main.py
-```
+#### 1. Випадковий матч (Ranked)
+Бот підбере вам суперника з близьким рейтингом.
+1. Натисніть "Грати" в меню.
+2. Оберіть "Рейтингова гра".
+3. Очікуйте на суперника.
 
-Environment variables
+#### 2. Гра з другом (Private)
+Ви можете створити запрошення та надіслати його другу.
+1. Натисніть "Грати".
+2. Оберіть "Гра з другом".
+3. Надішліть отримане посилання/код другу.
+4. Друг має натиснути "Приєднатися" та ввести код.
 
-- `TELEGRAM_TOKEN` — token for the Telegram bot
-- `DATABASE_URL` — optional custom DB connection
-- Other configuration is loaded from environment or default values in code
+#### 3. Гра в групі
+Додайте бота в групу.
+1. Введіть `/checkersplay` у чаті групи.
+2. Натисніть кнопку, щоб приєднатися до гри.
 
-Interacting with the bot
+## 📱 Інтерфейс гри
 
-- The bot supports playing checkers games with commands and inline interactions (see `inline-mode-implementation.md`).
-- Handlers are implemented in `handlers.py` — user commands, buttons, and gameplay flows.
+Гра відбувається за допомогою Inline-кнопок під повідомленням.
+- **Зелені клітинки**: Ваші фігури або куди можна походити.
+- **Жовті клітинки**: Обрана фігура.
+- **Червоні клітинки**: Фігури суперника.
 
-Common operations
-
-- Restarting the bot when running under compose:
-
-```bash
-podman-compose restart bot
-```
-
-- Inspect logs (podman):
-
-```bash
-podman logs -f <container-name>
-```
-
-Tips
-
-- Use `test_engine.py` to validate game logic locally before running a full integration session.
-- If the bot fails to connect to Telegram, ensure `TELEGRAM_TOKEN` is set and the network allows outbound requests.
+Просто натискайте на клітинки, щоб зробити хід.

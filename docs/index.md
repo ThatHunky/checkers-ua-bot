@@ -1,24 +1,16 @@
-# Checkers UA Bot
+# Документація Checkers UA Bot
 
-A Telegram checkers bot (Ukrainian) that implements game rules, matchmaking, ratings, and internationalization. This repository contains the bot's source, tests, container configuration, and documentation.
+Ласкаво просимо до документації Telegram-бота для гри в українські шашки.
 
-Docs in this folder:
+## 📚 Зміст
 
-- installation.md — how to install and run locally or in containers
-- usage.md — how to run and interact with the bot
-- architecture.md — overview of components and data flow
-- development.md — development environment and workflow
-- testing.md — how to run tests
-- deployment.md — building and running containers
-- contributing.md — how to contribute
-- localization.md — translations and locales
-- inline-mode-implementation.md — (existing) notes about inline mode implementation
-- faq.md — common questions and troubleshooting
+### Для гравців
+- **[Посібник користувача](usage.md)**: Як почати гру, доступні команди, режими гри.
+- **[Особливості гри](features.md)**: Правила українських шашок, система рейтингу, мульти-джамп.
 
-Quick links
-
-- Repository root: `README.md`
-- Main entrypoints: `main.py`, `main_polling.py`
-- Core modules: `engine.py`, `handlers.py`, `repository.py`, `ratings.py`, `game_data.py`
-
-If you're new here, start with `installation.md` then `usage.md`.
+### Для адміністраторів та розробників
+- **[Встановлення](installation.md)**: Інструкція з розгортання бота.
+- **[Адміністрування](administration.md)**: Керування ботом, адмін-команди.
+- **[Архітектура](architecture.md)**: Структура проекту та технічні деталі.
+- **[Розробка](development.md)**: Налаштування середовища для розробки.
+- **[FAQ](faq.md)**: Часті запитання та вирішення проблем.

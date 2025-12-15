@@ -8,10 +8,10 @@ Core modules
 - `handlers.py` — contains Telegram update handlers: commands, callback query handlers, and message processing.
 - `engine.py` — the game engine implementing checkers rules, move validation, and game state transitions.
 - `game_data.py` — data models and helpers for game representation (board layout, serialization/deserialization).
+- `matchmaking.py` — handles the matchmaking queue logic and pairing players.
 - `repository.py` — persistence layer for saving games, players, and ratings; abstracts storage details.
 - `ratings.py` — rating system utilities to update player rankings after games.
 - `locales.py` — localization helper for translating bot messages; used in UI/handlers.
-- `repository.py` — storage interactions and migrations (if present) are kept here.
 
 Flow (high level)
 
