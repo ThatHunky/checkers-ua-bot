@@ -7,7 +7,7 @@ import uuid
 import json
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -218,6 +218,13 @@ class GameHandlers:
         self.game_data_repo = game_data_repo
         self.matchmaking = MatchmakingService(repository, rating_system)
 
+    @staticmethod
+    def _pos_to_human(pos: int) -> str:
+        """Convert board index to human-readable coordinates (e.g., A8)."""
+        col = chr(ord("A") + (pos % 8))
+        row = 8 - (pos // 8)
+        return f"{col}{row}"
+
     # ------------------------------------------------------------------
     # High-level menu + matchmaking helpers (lightweight implementations)
     # ------------------------------------------------------------------
@@ -263,9 +270,50 @@ class GameHandlers:
         await self._send_play_menu(message)
 
     async def replay_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Placeholder for game history until full UI is implemented."""
-        await update.effective_message.reply_text(
-            "📺 Перегляд історії ігор тимчасово недоступний. Спробуйте пізніше."
+        """Show a list of recent completed games for the user."""
+        message = update.effective_message
+        user = update.effective_user
+
+        if not self.game_data_repo:
+            await message.reply_text("📺 Історія ігор тимчасово недоступна.")
+            return
+
+        game_ids = self.game_data_repo.get_user_completed_games(user.id, limit=5)
+
+        if not game_ids:
+            await message.reply_text("У вас поки немає завершених ігор для перегляду.")
+            return
+
+        buttons = []
+        lines: List[str] = ["Оберіть гру для перегляду:"]
+
+        for game_id in game_ids:
+            data = self.game_data_repo.get_completed_game(game_id)
+            if not data:
+                continue
+
+            if data["red_player_id"] == user.id:
+                opponent = data["white_player_name"]
+                color = "червоні"
+            elif data["white_player_id"] == user.id:
+                opponent = data["red_player_name"]
+                color = "білі"
+            else:
+                opponent = "суперник"
+                color = "?"
+
+            winner_mark = "🏆" if data["winner_id"] == user.id else ""
+            completed = data.get("completed_at", "")[:16].replace("T", " ")
+            lines.append(f"• {game_id} – проти {opponent} ({color}) {winner_mark} {completed}")
+            buttons.append([
+                InlineKeyboardButton(
+                    f"Гра {game_id}", callback_data=f"replay_{game_id}_0"
+                )
+            ])
+
+        await message.reply_text(
+            "\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(buttons),
         )
 
     async def inline_query_handler(
@@ -340,6 +388,98 @@ class GameHandlers:
         await message.reply_text(
             f"✅ Ви приєдналися до запрошення {code}. "
             f"Створіть нову гру разом із користувачем {creator}."
+        )
+
+    async def replay_game_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Render a saved game's move-by-move replay."""
+
+        query = update.callback_query
+        if not query:
+            return
+
+        await query.answer()
+
+        if not self.game_data_repo:
+            await query.edit_message_text("Історія ігор недоступна.")
+            return
+
+        try:
+            _, game_id, step_str = query.data.split("_", 2)
+            step = max(int(step_str), 0)
+        except Exception:
+            await query.edit_message_text("Невідомий формат запиту на повтор гри.")
+            return
+
+        game_data = self.game_data_repo.get_completed_game(game_id)
+        if not game_data:
+            await query.edit_message_text("Гру не знайдено або вона недоступна.")
+            return
+
+        moves = game_data.get("move_history", [])
+        total_steps = len(moves)
+
+        # Clamp step within available range (including final board view)
+        step = min(step, total_steps)
+
+        header = (
+            f"📺 Повтор гри {game_id}\n"
+            f"🔴 {game_data['red_player_name']} vs ⚪ {game_data['white_player_name']}"
+        )
+
+        if step == total_steps:
+            board = game_data.get("final_board")
+            if not board and moves:
+                board = moves[-1].get("board_before")
+            if not board:
+                board = game_data.get("initial_board")
+            summary = (
+                f"Фінальна позиція.\n"
+                f"Переможець: {game_data['winner_name']} ({game_data['winner_color']})."
+            )
+        else:
+            move = moves[step]
+            board = move.get("board_before") or game_data.get("initial_board")
+            mover = "червоні" if move.get("player") == "red" else "білі"
+            from_pos = self._pos_to_human(move.get("from", 0))
+            to_pos = self._pos_to_human(move.get("to", 0))
+            captures = move.get("captures") or []
+            capture_text = ""
+            if captures:
+                captured_squares = ", ".join(self._pos_to_human(p) for p in captures)
+                capture_text = f"; б'є: {captured_squares}"
+
+            summary = f"Хід {step + 1} ({mover}): {from_pos} → {to_pos}{capture_text}"
+
+        board = board or game_data.get("initial_board", CheckersEngine.init_board())
+        board_text = BoardRenderer.render(board)
+
+        prev_step = max(step - 1, 0)
+        next_step = min(step + 1, total_steps)
+
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "⏪ Попередній", callback_data=f"replay_{game_id}_{prev_step}"
+                    ),
+                    InlineKeyboardButton(
+                        "⏩ Наступний", callback_data=f"replay_{game_id}_{next_step}"
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🔁 На початок", callback_data=f"replay_{game_id}_0"
+                    ),
+                    InlineKeyboardButton(
+                        "🏁 Фінал", callback_data=f"replay_{game_id}_{total_steps}"
+                    ),
+                ],
+            ]
+        )
+
+        await query.edit_message_text(
+            f"{header}\n\n{board_text}\n\n{summary}",
+            reply_markup=keyboard,
         )
 
     async def menu_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
