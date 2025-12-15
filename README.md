@@ -1,4 +1,4 @@
-# Checkers UA — Telegram бот для українських шашок
+# ⚠ WIP Checkers UA — Telegram бот для українських шашок
 
 ![Checkers UA Banner](checker_ua_icon.png)
 
