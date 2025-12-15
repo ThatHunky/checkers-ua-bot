@@ -347,6 +347,9 @@ def main():
 
     # Register callback handlers
     application.add_handler(
+        CallbackQueryHandler(handlers.inline_challenge_join_callback, pattern="^inline_challenge_join$")
+    )
+    application.add_handler(
         CallbackQueryHandler(handlers.join_callback, pattern="^join")
     )
     application.add_handler(

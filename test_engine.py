@@ -132,7 +132,7 @@ def test_mid_capture_promotion():
     
     engine = CheckersEngine()
     
-    # Set up: White man can capture to row 0 (king row), then continue capturing
+    # Set up: Yellow man can capture to row 0 (king row), then continue capturing
     # Board setup:
     #   Row 0: Empty target squares
     #   Row 1: RED pieces to capture
@@ -143,7 +143,7 @@ def test_mid_capture_promotion():
     engine.board[11] = RED    # Enemy at row 1, col 3 (D7) - second capture after promotion
     engine.current_turn = WHITE
     
-    # Expected: White captures B7 landing on A8 (row 0, becomes king), 
+    # Expected: Yellow captures B7 landing on A8 (row 0, becomes king), 
     # then captures D7 as king, landing somewhere on row 2
     
     moves = engine.get_legal_moves(WHITE)
@@ -174,7 +174,7 @@ def test_mid_capture_promotion():
     # Create a scenario where we KNOW promotion should happen
     engine2 = CheckersEngine()
     engine2.board = [0] * 64
-    # White man at row 2, can capture enemy at row 1, land on row 0 (king), 
+    # Yellow man at row 2, can capture enemy at row 1, land on row 0 (king), 
     # then capture another enemy and end up NOT on row 0
     # Positions: 16=row2 col0, 9=row1 col1, 2=row0 col2, 11=row1 col3, 20=row2 col4
     engine2.board[16] = WHITE  # A6

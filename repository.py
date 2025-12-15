@@ -3,10 +3,13 @@ Redis-based state management for Checkers games.
 """
 
 import json
+import logging
 from typing import Optional
 from datetime import datetime
 import redis
 from redis.exceptions import ResponseError
+
+logger = logging.getLogger(__name__)
 
 
 class GameRepository:
@@ -47,7 +50,7 @@ class GameRepository:
             self.redis_client.setex(key, self.ttl, value)
             return True
         except Exception as e:
-            print(f"Error saving game: {e}")
+            logger.error(f"Error saving game: {e}")
             return False
     
     def get_game(self, chat_id: int, message_id: int) -> Optional[dict]:
@@ -64,7 +67,7 @@ class GameRepository:
                 return json.loads(value)
             return None
         except Exception as e:
-            print(f"Error retrieving game: {e}")
+            logger.error(f"Error retrieving game: {e}")
             return None
     
     def delete_game(self, chat_id: int, message_id: int) -> bool:
@@ -79,7 +82,7 @@ class GameRepository:
             self.redis_client.delete(key)
             return True
         except Exception as e:
-            print(f"Error deleting game: {e}")
+            logger.error(f"Error deleting game: {e}")
             return False
     
     def ping(self) -> bool:
@@ -87,7 +90,7 @@ class GameRepository:
         try:
             return self.redis_client.ping()
         except Exception as e:
-            print(f"Redis connection error: {e}")
+            logger.error(f"Redis connection error: {e}")
             return False
     
     def get_all_games(self) -> list:
@@ -111,7 +114,7 @@ class GameRepository:
                         game_state = json.loads(value)
                         games.append((chat_id, message_id, game_state))
         except Exception as e:
-            print(f"Error getting all games: {e}")
+            logger.error(f"Error getting all games: {e}")
         return games
     
     def get_all_inline_games(self) -> list:
@@ -134,7 +137,7 @@ class GameRepository:
                         game_state = json.loads(value)
                         games.append((inline_message_id, game_state))
         except Exception as e:
-            print(f"Error getting all inline games: {e}")
+            logger.error(f"Error getting all inline games: {e}")
         return games
     
     def get_user_game(self, user_id: int) -> Optional[tuple]:
@@ -187,7 +190,7 @@ class GameRepository:
             
             return True
         except Exception as e:
-            print(f"Error registering user: {e}")
+            logger.error(f"Error registering user: {e}")
             return False
     
     def get_user_by_id(self, user_id: int) -> Optional[dict]:
@@ -199,7 +202,7 @@ class GameRepository:
                 return json.loads(value)
             return None
         except Exception as e:
-            print(f"Error getting user by ID: {e}")
+            logger.error(f"Error getting user by ID: {e}")
             return None
     
     def get_user_by_username(self, username: str) -> Optional[dict]:
@@ -223,7 +226,7 @@ class GameRepository:
             # Then get full user info
             return self.get_user_by_id(int(user_id_str))
         except Exception as e:
-            print(f"Error getting user by username: {e}")
+            logger.error(f"Error getting user by username: {e}")
             return None
 
     # ============ Pending Invites ============
@@ -263,7 +266,7 @@ class GameRepository:
             self.redis_client.setex(key, invite_ttl, json.dumps(invite_data))
             return True
         except Exception as e:
-            print(f"Error creating invite: {e}")
+            logger.error(f"Error creating invite: {e}")
             return False
     
     def get_invite(self, invite_id: str) -> Optional[dict]:
@@ -275,7 +278,7 @@ class GameRepository:
                 return json.loads(value)
             return None
         except Exception as e:
-            print(f"Error getting invite: {e}")
+            logger.error(f"Error getting invite: {e}")
             return None
     
     def delete_invite(self, invite_id: str) -> bool:
@@ -285,7 +288,7 @@ class GameRepository:
             self.redis_client.delete(key)
             return True
         except Exception as e:
-            print(f"Error deleting invite: {e}")
+            logger.error(f"Error deleting invite: {e}")
             return False
     
     # ============ Flood Control ============
@@ -324,7 +327,7 @@ class GameRepository:
             remaining = max_actions - count - 1
             return (True, remaining)
         except Exception as e:
-            print(f"Error checking rate limit: {e}")
+            logger.warning(f"Error checking rate limit: {e}")
             # On error, allow the action
             return (True, max_actions)
     
@@ -335,7 +338,7 @@ class GameRepository:
             self.redis_client.delete(key)
             return True
         except Exception as e:
-            print(f"Error resetting rate limit: {e}")
+            logger.error(f"Error resetting rate limit: {e}")
             return False
 
     # ============ Inline Game Storage ============
@@ -353,7 +356,7 @@ class GameRepository:
             self.redis_client.setex(key, self.ttl, value)
             return True
         except Exception as e:
-            print(f"Error saving inline game: {e}")
+            logger.error(f"Error saving inline game: {e}")
             return False
 
     def get_inline_game(self, inline_message_id: str) -> Optional[dict]:
@@ -365,7 +368,7 @@ class GameRepository:
                 return json.loads(value)
             return None
         except Exception as e:
-            print(f"Error getting inline game: {e}")
+            logger.error(f"Error getting inline game: {e}")
             return None
 
     def delete_inline_game(self, inline_message_id: str) -> bool:
@@ -375,7 +378,7 @@ class GameRepository:
             self.redis_client.delete(key)
             return True
         except Exception as e:
-            print(f"Error deleting inline game: {e}")
+            logger.error(f"Error deleting inline game: {e}")
             return False
 
     def get_inline_challenge(self, inline_message_id: str) -> Optional[dict]:
@@ -387,7 +390,7 @@ class GameRepository:
                 return json.loads(value)
             return None
         except Exception as e:
-            print(f"Error getting inline challenge: {e}")
+            logger.error(f"Error getting inline challenge: {e}")
             return None
 
     def save_inline_challenge(self, inline_message_id: str, challenge_data: dict) -> bool:
@@ -399,7 +402,7 @@ class GameRepository:
             self.redis_client.setex(key, challenge_ttl, value)
             return True
         except Exception as e:
-            print(f"Error saving inline challenge: {e}")
+            logger.error(f"Error saving inline challenge: {e}")
             return False
 
     def delete_inline_challenge(self, inline_message_id: str) -> bool:
@@ -409,7 +412,7 @@ class GameRepository:
             self.redis_client.delete(key)
             return True
         except Exception as e:
-            print(f"Error deleting inline challenge: {e}")
+            logger.error(f"Error deleting inline challenge: {e}")
             return False
 
     # ============ Matchmaking ============

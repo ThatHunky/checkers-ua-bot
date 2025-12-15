@@ -44,6 +44,12 @@ PIECE_WHITE_KING = "💛"   # Yellow king (heart)
 PIECE_RED = "🔵"          # Blue man
 PIECE_RED_KING = "💙"     # Blue king (heart)
 
+# Selected pieces
+PIECE_WHITE_SELECTED = "🍌"        # Yellow man selected
+PIECE_WHITE_KING_SELECTED = "🍍"   # Yellow king selected
+PIECE_RED_SELECTED = "🐳"          # Blue man selected
+PIECE_RED_KING_SELECTED = "💎"     # Blue king selected
+
 # Matchmaking / Menu
 MENU_TITLE = "Головне меню"
 MENU_PLAY = "▶️ Грати"
@@ -70,6 +76,15 @@ SEARCHING_BACK = "⬅️ Назад до режимів"
 INVITE_CREATED = "📨 Запрошення створено: <code>{code}</code>"
 INVITE_SHARE = "📤 Поділитися кодом"
 INVITE_CANCEL = "❌ Скасувати запрошення"
+
+# Inline Challenge
+INLINE_CHALLENGE_TITLE = "🎮 Створити виклик на гру"
+INLINE_CHALLENGE_DESC = "Створіть виклик, до якого зможе приєднатися будь-хто"
+INLINE_CHALLENGE_MSG = "🎮 <b>Виклик на гру в Шашки!</b>\n\n{name} хоче зіграти!\nНатисніть кнопку нижче, щоб приєднатися."
+INLINE_CHALLENGE_JOIN = "⚔️ Приєднатися"
+INLINE_CHALLENGE_EXPIRED = "❌ Виклик закінчився або вже використано."
+INLINE_CHALLENGE_SELF_JOIN = "❌ Ви не можете приєднатися до власного виклику."
+INLINE_CHALLENGE_NOT_FOUND = "❌ Виклик не знайдено."
 PROFILE_TEMPLATE = (
     "👤 {name}\n"
     "⭐ Рейтинг: {rating}\n"
