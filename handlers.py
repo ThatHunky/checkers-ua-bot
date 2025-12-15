@@ -13,7 +13,9 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InlineQueryResultArticle,
-    InputTextMessageContent
+    InputTextMessageContent,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
 )
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
@@ -235,6 +237,28 @@ class GameHandlers:
             ]
         )
 
+    def _menu_reply_keyboard(self) -> ReplyKeyboardMarkup:
+        return ReplyKeyboardMarkup(
+            [[KeyboardButton(locales.MENU_BUTTON)]],
+            resize_keyboard=True,
+            is_persistent=True,
+        )
+
+    async def _send_menu_reply_keyboard(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Ensure the persistent Menu reply keyboard is available."""
+        message = update.effective_message
+        if not message:
+            return
+
+        if context.chat_data.get("has_menu_keyboard"):
+            return
+
+        context.chat_data["has_menu_keyboard"] = True
+        await message.reply_text(
+            locales.MENU_SHORTCUT_HINT,
+            reply_markup=self._menu_reply_keyboard(),
+        )
+
     def _searching_keyboard(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(
             [
@@ -280,10 +304,17 @@ class GameHandlers:
         self.repo.register_user(user.id, user.username, user.first_name)
 
         await self.show_main_menu(update, context)
+        await self._send_menu_reply_keyboard(update, context)
 
     async def menu_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Explicit /menu command."""
         await self.show_main_menu(update, context)
+        await self._send_menu_reply_keyboard(update, context)
+
+    async def menu_text_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle text button presses that request the menu."""
+        await self.show_main_menu(update, context)
+        await self._send_menu_reply_keyboard(update, context)
 
     async def show_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Display the main menu via message or edit."""
@@ -293,6 +324,7 @@ class GameHandlers:
             await update.callback_query.edit_message_text(text, reply_markup=keyboard)
         else:
             await update.effective_message.reply_text(text, reply_markup=keyboard)
+            await self._send_menu_reply_keyboard(update, context)
 
     async def show_play_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = locales.PLAY_TITLE
