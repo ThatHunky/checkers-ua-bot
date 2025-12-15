@@ -2140,11 +2140,17 @@ class GameHandlers:
     
     async def ratings_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /ratings command - show leaderboard with pagination."""
+        message = update.message or update.effective_message
+
         if not self.rating_system:
-            await update.message.reply_text("Система рейтингу недоступна.")
+            await message.reply_text("Система рейтингу недоступна.")
             return
-        
-        await self._send_leaderboard(update.message, page=0)
+
+        edit = bool(update.callback_query)
+        if update.callback_query:
+            await update.callback_query.answer()
+
+        await self._send_leaderboard(message, page=0, edit=edit)
     
     async def ratings_page_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle leaderboard page navigation."""
