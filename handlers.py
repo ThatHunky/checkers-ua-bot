@@ -1201,16 +1201,26 @@ class GameHandlers:
             "move_count": game_state.get("move_count", 0)
         })
         
+        # Handle mandatory continuation captures
+        pending_capture = game_state.get("pending_capture")
+
+        if pending_capture and from_pos != pending_capture.get("pos"):
+            await query.answer(locales.ERROR_INVALID_MOVE, show_alert=True)
+            return
+
         # Verify the selected piece belongs to the current player
         piece_at_from = engine.board[from_pos]
         piece_color = engine.get_piece_color(piece_at_from)
-        
+
         if piece_color != engine.current_turn:
             await query.answer("❌ Ви не можете рухати фігуру суперника!", show_alert=True)
             return
-        
+
         # Find and apply the move
-        legal_moves = engine.get_legal_moves(engine.current_turn)
+        if pending_capture:
+            legal_moves = engine.find_single_hop_captures(pending_capture["pos"])
+        else:
+            legal_moves = engine.get_legal_moves(engine.current_turn)
         move_to_apply = None
         
         for move in legal_moves:
