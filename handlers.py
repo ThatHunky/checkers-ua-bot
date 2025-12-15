@@ -1218,15 +1218,20 @@ class GameHandlers:
         game_state.setdefault("move_history", []).append(move_record)
         
         # Apply move
+        previous_turn = engine.current_turn
         engine.apply_move(move_to_apply)
-        
+
         # Check if this was a capture and if player must continue
         must_continue = False
         if move_to_apply.captures:
-            # Check if more captures are mandatory from landing position
+            # Temporarily keep the turn with the same player to evaluate continuation
+            engine.current_turn = previous_turn
             must_continue = engine.must_continue_capturing(move_to_apply.to_pos)
-        
-        # Check for winner
+            if not must_continue:
+                # Restore the normal turn switch performed inside apply_move
+                engine.current_turn = RED if previous_turn == WHITE else WHITE
+
+        # Check for winner (after finalizing whose turn it is)
         winner = engine.check_winner()
         
         if winner:
