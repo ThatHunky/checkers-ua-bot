@@ -218,6 +218,218 @@ class GameHandlers:
         self.game_data_repo = game_data_repo
         self.matchmaking = MatchmakingService(repository, rating_system)
 
+    # ------------------------------------------------------------------
+    # High-level menu + matchmaking helpers (lightweight implementations)
+    # ------------------------------------------------------------------
+
+    async def start_bot_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /start - show the main menu in private chat."""
+        await self.menu_command(update, context)
+
+    async def menu_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show the main menu (private chats only)."""
+        chat = update.effective_chat
+        message = update.effective_message
+
+        if not self._is_private_chat(chat):
+            await message.reply_text(locales.MENU_PRIVATE_ONLY)
+            return
+
+        await self._send_main_menu(message)
+
+    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Entry point for /checkersplay - show play modes."""
+        chat = update.effective_chat
+        message = update.effective_message
+
+        if not self._is_private_chat(chat):
+            await message.reply_text(locales.MENU_PRIVATE_ONLY)
+            return
+
+        await self._send_play_menu(message)
+
+    async def replay_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Placeholder for game history until full UI is implemented."""
+        await update.effective_message.reply_text(
+            "📺 Перегляд історії ігор тимчасово недоступний. Спробуйте пізніше."
+        )
+
+    async def join_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Join an invite by code (if created via the menu)."""
+        message = update.effective_message
+        args = context.args or []
+        if not args:
+            await message.reply_text("Використання: /join <код запрошення>")
+            return
+
+        code = args[0].strip().upper()
+        result = self.matchmaking.accept_invite(
+            update.effective_user.id, message.chat_id, code
+        )
+        if not result:
+            await message.reply_text("❌ Запрошення не знайдено або вже використано.")
+            return
+
+        creator = result.get("creator_user_id")
+        await message.reply_text(
+            f"✅ Ви приєдналися до запрошення {code}. "
+            f"Створіть нову гру разом із користувачем {creator}."
+        )
+
+    async def menu_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle menu navigation callbacks."""
+        query = update.callback_query
+        await query.answer()
+
+        data = query.data
+
+        if data == MENU_MAIN:
+            await self._send_main_menu(query.message, edit=True)
+        elif data == MENU_PLAY:
+            await self._send_play_menu(query.message, edit=True)
+        elif data == MENU_PROFILE:
+            await self.myrating_command(update, context)
+        elif data == MENU_RATING:
+            await self.ratings_command(update, context)
+        elif data == MENU_HELP:
+            await query.message.edit_text(locales.HELP_TEXT, parse_mode="HTML")
+        elif data == MENU_ABOUT:
+            await query.message.edit_text(locales.ABOUT_TEXT)
+        elif data in {PLAY_RATED, PLAY_CASUAL}:
+            mode = "rated" if data == PLAY_RATED else "casual"
+            await self._start_matchmaking(query, mode)
+        elif data in {PLAY_INVITE_RATED, PLAY_INVITE_CASUAL}:
+            mode = "rated" if data == PLAY_INVITE_RATED else "casual"
+            code = self.matchmaking.create_invite(
+                query.from_user.id, query.message.chat_id, mode
+            )["code"]
+            keyboard = InlineKeyboardMarkup(
+                [
+                    [InlineKeyboardButton(locales.INVITE_SHARE, switch_inline_query=code)],
+                    [
+                        InlineKeyboardButton(
+                            locales.INVITE_CANCEL, callback_data=MM_CANCEL
+                        )
+                    ],
+                    [InlineKeyboardButton(locales.BTN_BACK, callback_data=BACK_TO_PLAY)],
+                ]
+            )
+            await query.message.edit_text(
+                locales.INVITE_CREATED.format(code=code),
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+        elif data == JOIN_CODE:
+            await query.message.edit_text(
+                "Використайте /join <код> щоб приєднатися до запрошення",
+                reply_markup=InlineKeyboardMarkup(
+                    [[InlineKeyboardButton(locales.BTN_BACK, callback_data=BACK_TO_PLAY)]]
+                ),
+            )
+        elif data in {MM_CANCEL, BACK_TO_PLAY}:
+            # Cancel any queued ticket and return to play menu
+            self.matchmaking.cancel(query.from_user.id)
+            await self._send_play_menu(query.message, edit=True)
+
+    async def join_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle legacy join callbacks (fallback)."""
+        query = update.callback_query
+        await query.answer("Приєднання через кнопки більше не використовується. Спробуйте /join")
+
+    async def cancel_invite_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Cancel an invite from inline button."""
+        query = update.callback_query
+        await query.answer()
+        self.matchmaking.cancel(query.from_user.id)
+        await query.message.edit_text("Запрошення скасовано.")
+
+    async def accept_private_invite_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Placeholder handler for accepting invites from inline keyboard."""
+        query = update.callback_query
+        await query.answer("Використайте /join з кодом, щоб приєднатися.")
+
+    async def matchmaking_tick(self, context: ContextTypes.DEFAULT_TYPE):
+        """Background job that attempts to pair queued players."""
+        for mode in ("rated", "casual"):
+            while True:
+                result = self.matchmaking.try_match(mode)
+                if not result:
+                    break
+
+                users = result.get("users", [])
+                for user in users:
+                    chat_id = int(user.get("chat_id", 0))
+                    if not chat_id:
+                        continue
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            "✅ Знайдено суперника! "
+                            "Наразі автоматичний старт гри ще в розробці."
+                        ),
+                    )
+                    self.matchmaking.cancel(int(user.get("user_id", 0)))
+
+    # ------------------------------------------------------------------
+    # Menu helper utilities
+    # ------------------------------------------------------------------
+
+    async def _send_main_menu(self, message, edit: bool = False):
+        keyboard = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton(locales.MENU_PLAY, callback_data=MENU_PLAY)],
+                [
+                    InlineKeyboardButton(locales.MENU_PROFILE, callback_data=MENU_PROFILE),
+                    InlineKeyboardButton(locales.MENU_RATING, callback_data=MENU_RATING),
+                ],
+                [
+                    InlineKeyboardButton(locales.MENU_HELP, callback_data=MENU_HELP),
+                    InlineKeyboardButton(locales.MENU_ABOUT, callback_data=MENU_ABOUT),
+                ],
+            ]
+        )
+
+        if edit:
+            await message.edit_text(locales.MENU_TITLE, reply_markup=keyboard)
+        else:
+            await message.reply_text(locales.MENU_TITLE, reply_markup=keyboard)
+
+    async def _send_play_menu(self, message, edit: bool = False):
+        keyboard = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton(locales.PLAY_QUICK_RATED, callback_data=PLAY_RATED)],
+                [InlineKeyboardButton(locales.PLAY_QUICK_CASUAL, callback_data=PLAY_CASUAL)],
+                [
+                    InlineKeyboardButton(locales.PLAY_INVITE_RATED, callback_data=INVITE_RATED),
+                    InlineKeyboardButton(locales.PLAY_INVITE_CASUAL, callback_data=INVITE_CASUAL),
+                ],
+                [InlineKeyboardButton(locales.PLAY_JOIN_CODE, callback_data=JOIN_CODE)],
+                [InlineKeyboardButton(locales.BTN_BACK_TO_MENU, callback_data=MENU_MAIN)],
+            ]
+        )
+
+        if edit:
+            await message.edit_text(locales.PLAY_TITLE, reply_markup=keyboard)
+        else:
+            await message.reply_text(locales.PLAY_TITLE, reply_markup=keyboard)
+
+    async def _start_matchmaking(self, query, mode: str):
+        ticket = await self.matchmaking.enqueue(
+            query.from_user.id, query.message.chat_id, mode, query.from_user.username
+        )
+        keyboard = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton(locales.SEARCHING_CANCEL, callback_data=MM_CANCEL)],
+                [InlineKeyboardButton(locales.SEARCHING_BACK, callback_data=BACK_TO_PLAY)],
+            ]
+        )
+        await query.message.edit_text(
+            f"{locales.SEARCHING_TITLE}\n\nРежим: {mode}\nРейтинг: {ticket.rating}",
+            reply_markup=keyboard,
+        )
+
+    # ------------------------------------------------------------------
+
     @staticmethod
     def _is_private_chat(chat) -> bool:
         return chat is None or getattr(chat, "type", None) == "private"
