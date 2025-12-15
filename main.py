@@ -312,16 +312,19 @@ def main():
 
     # Register timeout check job (runs every 60 seconds)
     application.job_queue.run_repeating(check_game_timeouts, interval=60, first=60)
+    application.job_queue.run_repeating(handlers.matchmaking_tick, interval=5, first=5)
     logger.info(f"Game timeout check enabled ({GAME_TIMEOUT_MINUTES} min timeout)")
 
     # Register command handlers
     application.add_handler(CommandHandler("start", handlers.start_bot_command))
+    application.add_handler(CommandHandler("menu", handlers.menu_command))
     application.add_handler(CommandHandler("checkersplay", handlers.start_command))
     application.add_handler(CommandHandler("checkersreplay", handlers.replay_command))
     application.add_handler(CommandHandler("cancel", handlers.cancel_command))
     application.add_handler(CommandHandler("forfeit", handlers.forfeit_command))
     application.add_handler(CommandHandler("myrating", handlers.myrating_command))
     application.add_handler(CommandHandler("ratings", handlers.ratings_command))
+    application.add_handler(CommandHandler("join", handlers.join_command))
     application.add_handler(
         CommandHandler("resetrankings", handlers.reset_rankings_command)
     )  # Hidden admin
@@ -338,6 +341,9 @@ def main():
     # Register callback handlers
     application.add_handler(
         CallbackQueryHandler(handlers.join_callback, pattern="^join")
+    )
+    application.add_handler(
+        CallbackQueryHandler(handlers.menu_callback, pattern="^(menu_|play_|invite_|join_code|mm_cancel|back_to_play)")
     )
     application.add_handler(
         CallbackQueryHandler(handlers.cancel_invite_callback, pattern="^cancel_invite$")

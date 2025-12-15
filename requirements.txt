@@ -2,3 +2,4 @@ python-telegram-bot[webhooks,job-queue]==20.7
 redis==5.0.1
 python-dotenv==1.0.0
 aiosqlite==0.19.0
+fakeredis==2.30.3
