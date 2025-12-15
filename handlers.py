@@ -237,6 +237,20 @@ class GameHandlers:
 
         await self._send_main_menu(message)
 
+    async def menu_text_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle text-based menu triggers in the same way as the /menu command."""
+        message = update.effective_message
+        text = (message.text or "").strip().lower() if message else ""
+
+        triggers = {"/menu", "menu", "меню"}
+
+        # Recognize bot-mention variants like /menu@YourBotName
+        if text.startswith("/menu@"):
+            return await self.menu_command(update, context)
+
+        if text in triggers:
+            return await self.menu_command(update, context)
+
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Entry point for /checkersplay - show play modes."""
         chat = update.effective_chat
