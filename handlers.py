@@ -212,6 +212,10 @@ class GameHandlers:
         self.game_data_repo = game_data_repo
         self.matchmaking = MatchmakingService(repository, rating_system)
 
+    @staticmethod
+    def _is_private_chat(chat) -> bool:
+        return chat is None or getattr(chat, "type", None) == "private"
+
     # ======== Menus ========
     def _main_menu_keyboard(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(
@@ -248,6 +252,9 @@ class GameHandlers:
         """Ensure the persistent Menu reply keyboard is available."""
         message = update.effective_message
         if not message:
+            return
+
+        if not self._is_private_chat(message.chat):
             return
 
         if context.chat_data.get("has_menu_keyboard"):
@@ -318,6 +325,14 @@ class GameHandlers:
 
     async def show_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Display the main menu via message or edit."""
+        chat = update.effective_chat
+        if chat and not self._is_private_chat(chat):
+            if update.callback_query:
+                await update.callback_query.answer(locales.MENU_PRIVATE_ONLY, show_alert=True)
+            elif update.effective_message:
+                await update.effective_message.reply_text(locales.MENU_PRIVATE_ONLY)
+            return
+
         text = locales.MENU_TITLE
         keyboard = self._main_menu_keyboard()
         if update.callback_query:
@@ -2197,7 +2212,12 @@ class GameHandlers:
             if not message:
                 message = query.message or query
 
-        await self._send_leaderboard(message, page=0, edit=edit)
+        await self._send_leaderboard(
+            message,
+            page=0,
+            edit=edit,
+            is_private_chat=self._is_private_chat(update.effective_chat),
+        )
 
     async def ratings_page_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle leaderboard page navigation."""
@@ -2216,9 +2236,21 @@ class GameHandlers:
         page = int(page_str)
 
         target = query.message or query
-        await self._send_leaderboard(target, page=page, edit=True)
-    
-    async def _send_leaderboard(self, message, page: int = 0, edit: bool = False):
+        await self._send_leaderboard(
+            target,
+            page=page,
+            edit=True,
+            is_private_chat=self._is_private_chat(update.effective_chat),
+        )
+
+    async def _send_leaderboard(
+        self,
+        message,
+        page: int = 0,
+        edit: bool = False,
+        *,
+        is_private_chat: bool = True,
+    ):
         """Send or edit leaderboard message with pagination."""
         PLAYERS_PER_PAGE = 15
         offset = page * PLAYERS_PER_PAGE
@@ -2267,7 +2299,8 @@ class GameHandlers:
             buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"ratings_page_{page + 1}"))
 
         rows = [buttons] if buttons else []
-        rows.append([InlineKeyboardButton(locales.BTN_BACK_TO_MENU, callback_data=MENU_MAIN)])
+        if is_private_chat:
+            rows.append([InlineKeyboardButton(locales.BTN_BACK_TO_MENU, callback_data=MENU_MAIN)])
         keyboard = InlineKeyboardMarkup(rows)
         
         if edit:
