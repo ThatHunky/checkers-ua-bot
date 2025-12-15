@@ -10,11 +10,13 @@ from dotenv import load_dotenv
 from telegram import Update, BotCommand
 from telegram.ext import (
     Application,
-    CommandHandler,
     CallbackQueryHandler,
-    InlineQueryHandler,
     ChosenInlineResultHandler,
+    CommandHandler,
     ContextTypes,
+    InlineQueryHandler,
+    MessageHandler,
+    filters,
 )
 
 
@@ -331,6 +333,11 @@ def main():
     application.add_handler(
         CommandHandler("addlegend", handlers.add_legend_command)
     )  # Hidden arcade mode
+    application.add_handler(
+        MessageHandler(
+            filters.Regex("(?i)^/?menu$|^меню$"), handlers.menu_text_handler
+        )
+    )
 
     # Register inline query handlers
     application.add_handler(InlineQueryHandler(handlers.inline_query_handler))

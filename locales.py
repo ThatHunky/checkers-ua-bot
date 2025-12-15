@@ -52,6 +52,8 @@ MENU_RATING = "🏆 Рейтинг та Статистика"
 MENU_SETTINGS = "⚙️ Налаштування"
 MENU_HELP = "❓ Допомога"
 MENU_ABOUT = "ℹ️ Про бота"
+MENU_BUTTON = "📋 Меню"
+MENU_SHORTCUT_HINT = "Використайте кнопку \"Меню\" внизу для швидкого доступу до головного меню."
 
 PLAY_TITLE = "Режими гри"
 PLAY_QUICK_RATED = "⚡ Швидка гра (Рейтинг)"
