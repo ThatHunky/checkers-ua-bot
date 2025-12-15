@@ -414,6 +414,14 @@ class GameHandlers:
         query = update.callback_query
         await query.answer("Використайте /join з кодом, щоб приєднатися.")
 
+    async def decline_private_invite_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle declining an invite from inline keyboard in private chats."""
+        query = update.callback_query
+        await query.answer()
+
+        self.matchmaking.cancel(query.from_user.id)
+        await query.message.edit_text("❌ Запрошення відхилено.")
+
     async def matchmaking_tick(self, context: ContextTypes.DEFAULT_TYPE):
         """Background job that attempts to pair queued players."""
         for mode in ("rated", "casual"):
