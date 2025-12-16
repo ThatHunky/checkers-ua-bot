@@ -304,7 +304,9 @@ class RatingSystem:
         if move_count > 0 and (winner_fastest is None or move_count < winner_fastest):
             winner_fastest = move_count
         
-        loser_longest = loser.get("longest_game", 0)
+        loser_longest = loser.get("longest_game")
+        if loser_longest is None:
+            loser_longest = 0
         if move_count > loser_longest:
             loser_longest = move_count
         

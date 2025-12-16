@@ -39,6 +39,7 @@ from engine import CheckersEngine, YELLOW, BLUE, Move
 from repository import GameRepository
 from achievements import AchievementSystem
 from matchmaking import MatchmakingService
+from ranks import get_rank, get_rank_progress
 import locales
 
 class GameHandlers:
@@ -170,6 +171,8 @@ class GameHandlers:
         # Prepare game state
         game_state = {
             "board": board_state,
+            "initial_board": board_state.copy(),  # Save initial board for replay
+            "move_history": [],  # Initialize move history
             "current_turn": first_turn,
             "blue_player_id": int(red_user["user_id"]),
             "blue_player_name": red_first_name,
@@ -286,6 +289,19 @@ class GameHandlers:
                     f"Гра {game_id}", callback_data=f"replay_{game_id}_0_{user.id}"
                 )
             ])
+
+        if not buttons:
+            # All game references were orphaned (game IDs exist but game data is missing)
+            logger.warning(
+                f"Orphaned game references detected for user {user.id}: "
+                f"found {len(game_ids)} game IDs but no valid game data"
+            )
+            # Clean up orphaned references for this user
+            cleaned = self.game_data_repo.cleanup_orphaned_references(user.id)
+            if cleaned > 0:
+                logger.info(f"Cleaned up {cleaned} orphaned reference(s) for user {user.id}")
+            await message.reply_text("Не вдалося завантажити історію ігор. Спробуйте пізніше.")
+            return
 
         await message.reply_text(
             "\n".join(lines),
@@ -408,7 +424,7 @@ class GameHandlers:
                         title="❌ Користувача не знайдено",
                         description=f"@{username} ще не використовував цього бота",
                         input_message_content=InputTextMessageContent(
-                            f"❌ Користувача @{username} не знайдено. Він має використати /start з ботом спочатку."
+                            f"❌ Користувача @{username} не знайдено. Він має використати `/start` з ботом спочатку."
                         )
                     )
                 ]
@@ -419,7 +435,7 @@ class GameHandlers:
         share_text = (
             "🎲 Гра в шашки!\n"
             f"Код запрошення: {query_text}\n"
-            "Приєднуйтесь через /join <код>."
+            "Приєднуйтесь через `/join <код>`."
         )
 
         results = [
@@ -485,7 +501,7 @@ class GameHandlers:
         message = update.effective_message
         args = context.args or []
         if not args:
-            await message.reply_text("Використання: /join <код запрошення>")
+            await message.reply_text("Використання: `/join <код запрошення>`")
             return
 
         code = args[0].strip().upper()
@@ -606,7 +622,7 @@ class GameHandlers:
 
         header = (
             f"📺 Повтор гри {game_id}\n"
-            f"🔵 {game_data.get('blue_player_name', game_data.get('red_player_name', 'Blue'))} vs 🟡 {game_data.get('yellow_player_name', game_data.get('white_player_name', 'Yellow'))}"
+            f"🔵 {game_data.get('blue_player_name', 'Blue')} vs 🟡 {game_data.get('yellow_player_name', 'Yellow')}"
         )
 
         if step == total_steps:
@@ -715,7 +731,7 @@ class GameHandlers:
             )
         elif data == JOIN_CODE:
             await query.message.edit_text(
-                "Використайте /join <код> щоб приєднатися до запрошення",
+                "Використайте `/join <код>` щоб приєднатися до запрошення",
                 reply_markup=InlineKeyboardMarkup(
                     [[InlineKeyboardButton(locales.BTN_BACK, callback_data=BACK_TO_PLAY)]]
                 ),
@@ -835,6 +851,8 @@ class GameHandlers:
             # Prepare game state
             game_state = {
                 "board": board_state,
+                "initial_board": board_state.copy(),  # Save initial board for replay
+                "move_history": [],  # Initialize move history
                 "current_turn": first_turn,
                 "blue_player_id": int(red_user["user_id"]),
                 "blue_player_name": creator_first_name,
@@ -902,7 +920,7 @@ class GameHandlers:
     async def join_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle legacy join callbacks (fallback)."""
         query = update.callback_query
-        await query.answer("Приєднання через кнопки більше не використовується. Спробуйте /join")
+        await query.answer("Приєднання через кнопки більше не використовується. Спробуйте `/join`")
 
     async def cancel_invite_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Cancel an invite from inline button."""
@@ -914,7 +932,7 @@ class GameHandlers:
     async def accept_private_invite_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Placeholder handler for accepting invites from inline keyboard."""
         query = update.callback_query
-        await query.answer("Використайте /join з кодом, щоб приєднатися.")
+        await query.answer("Використайте `/join` з кодом, щоб приєднатися.")
 
     async def accept_inline_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle accepting an inline challenge when a user clicks accept_inline button."""
@@ -1004,6 +1022,8 @@ class GameHandlers:
             # Prepare game state
             game_state = {
                 "board": board_state,
+                "initial_board": board_state.copy(),  # Save initial board for replay
+                "move_history": [],  # Initialize move history
                 "current_turn": first_turn,
                 "blue_player_id": int(red_user["user_id"]),
                 "blue_player_name": creator_first_name,
@@ -1215,7 +1235,7 @@ class GameHandlers:
             "🤝 Запрошення на гру у цій групі\n"
             f"Режим: {'Рейтинг' if mode == 'rated' else 'Без рейтингу'}\n"
             f"Створив: {query.from_user.first_name}\n"
-            f"Код: {code} (можна /join {code})"
+            f"Код: {code} (можна `/join {code}`)"
         )
         keyboard = InlineKeyboardMarkup(
             [
@@ -2062,7 +2082,7 @@ class GameHandlers:
     async def new_game_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle new game button - just show welcome message."""
         query = update.callback_query
-        await query.answer("Використайте /checkersplay для нової гри")
+        await query.answer("Використайте `/checkersplay` для нової гри")
     
     async def cancel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /cancel command - cancel current game (only before moves)."""
@@ -2455,7 +2475,7 @@ class GameHandlers:
             if cat_info["count"] > 0:
                 row.append(InlineKeyboardButton(
                     f"{cat_info['name']} ({cat_info['unlocked']}/{cat_info['count']})",
-                    callback_data=f"ach_category_{cat_key}"
+                    callback_data=f"ach_category_{cat_key}_{user.id}"
                 ))
                 if len(row) == 2:
                     keyboard_buttons.append(row)
@@ -2469,7 +2489,7 @@ class GameHandlers:
             if cat_info["count"] > 0:
                 row.append(InlineKeyboardButton(
                     f"{cat_info['name']} ({cat_info['unlocked']}/{cat_info['count']})",
-                    callback_data=f"ach_category_{cat_key}"
+                    callback_data=f"ach_category_{cat_key}_{user.id}"
                 ))
                 if len(row) == 2:
                     keyboard_buttons.append(row)
@@ -2487,7 +2507,25 @@ class GameHandlers:
         await query.answer()
         
         user = query.from_user
-        category = query.data.replace("ach_category_", "")
+        
+        # Extract category and user ID from callback data: ach_category_{category}_{user_id}
+        try:
+            parts = query.data.replace("ach_category_", "").split("_", 1)
+            if len(parts) == 2:
+                category = parts[0]
+                authorized_user_id = int(parts[1])
+            else:
+                # Backward compatibility: old format without user ID
+                category = parts[0]
+                authorized_user_id = None
+        except (ValueError, IndexError):
+            await query.answer("❌ Невірний формат запиту.", show_alert=True)
+            return
+        
+        # Authorization check: only the command author can use buttons
+        if authorized_user_id is not None and user.id != authorized_user_id:
+            await query.answer("❌ Це не ваше повідомлення!", show_alert=True)
+            return
         
         if not self.achievement_system:
             await query.edit_message_text("❌ Система досягнень не налаштована.")
@@ -2544,9 +2582,10 @@ class GameHandlers:
         if len(category_achievements) > 10:
             message += f"\n... та ще {len(category_achievements) - 10} досягнень"
         
-        # Back button
+        # Back button (include user ID for authorization)
+        user_id = authorized_user_id if authorized_user_id is not None else user.id
         keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("◀️ Назад", callback_data="ach_back")
+            InlineKeyboardButton("◀️ Назад", callback_data=f"ach_back_{user_id}")
         ]])
         
         await query.edit_message_text(message, reply_markup=keyboard, parse_mode=ParseMode.HTML)
@@ -2556,8 +2595,24 @@ class GameHandlers:
         query = update.callback_query
         await query.answer()
         
-        # Reuse achievements_command logic
         user = query.from_user
+        
+        # Extract user ID from callback data: ach_back_{user_id}
+        try:
+            parts = query.data.replace("ach_back_", "").split("_")
+            if parts[0]:
+                authorized_user_id = int(parts[0])
+            else:
+                # Backward compatibility: old format without user ID
+                authorized_user_id = None
+        except (ValueError, IndexError):
+            # Backward compatibility: if no user ID in format, allow but use current user
+            authorized_user_id = None
+        
+        # Authorization check: only the command author can use buttons
+        if authorized_user_id is not None and user.id != authorized_user_id:
+            await query.answer("❌ Це не ваше повідомлення!", show_alert=True)
+            return
         
         if not self.achievement_system:
             await query.edit_message_text("❌ Система досягнень не налаштована.")
@@ -2601,14 +2656,15 @@ class GameHandlers:
                 status = "✅" if cat_info["unlocked"] == cat_info["count"] else "🔒"
                 message += f"{cat_info['name']}: {cat_info['unlocked']}/{cat_info['count']} {status}\n"
         
-        # Create keyboard (same as achievements_command)
+        # Create keyboard (same as achievements_command, but include user ID)
+        user_id = authorized_user_id if authorized_user_id is not None else user.id
         keyboard_buttons = []
         row = []
         for cat_key, cat_info in list(categories.items())[:5]:
             if cat_info["count"] > 0:
                 row.append(InlineKeyboardButton(
                     f"{cat_info['name']} ({cat_info['unlocked']}/{cat_info['count']})",
-                    callback_data=f"ach_category_{cat_key}"
+                    callback_data=f"ach_category_{cat_key}_{user_id}"
                 ))
                 if len(row) == 2:
                     keyboard_buttons.append(row)
@@ -2621,7 +2677,7 @@ class GameHandlers:
             if cat_info["count"] > 0:
                 row.append(InlineKeyboardButton(
                     f"{cat_info['name']} ({cat_info['unlocked']}/{cat_info['count']})",
-                    callback_data=f"ach_category_{cat_key}"
+                    callback_data=f"ach_category_{cat_key}_{user_id}"
                 ))
                 if len(row) == 2:
                     keyboard_buttons.append(row)
@@ -2791,12 +2847,28 @@ class GameHandlers:
             # Get move count from game state if available
             move_count = game_state.get("move_count", engine.move_count)
             
+            # Get old ratings and ranks before update
+            winner_before = await self.rating_system.get_player(winner_id, winner_name)
+            loser_before = await self.rating_system.get_player(loser_id, loser_name)
+            old_winner_rank = get_rank(winner_before["rating"])
+            old_loser_rank = get_rank(loser_before["rating"])
+            
             winner_data, loser_data = await self.rating_system.record_game(
                 winner_id, winner_name, loser_id, loser_name,
                 move_count=move_count
             )
             
+            # Get new ranks after update
+            new_winner_rank = get_rank(winner_data["rating"])
+            new_loser_rank = get_rank(loser_data["rating"])
+            
+            # Check for rank changes
+            winner_rank_changed = old_winner_rank["min_rating"] != new_winner_rank["min_rating"]
+            loser_rank_changed = old_loser_rank["min_rating"] != new_loser_rank["min_rating"]
+            
             # Check achievements for both players
+            winner_achievements = []
+            loser_achievements = []
             if self.achievement_system:
                 # Winner achievements
                 winner_game_result = {
@@ -2818,22 +2890,68 @@ class GameHandlers:
                 loser_achievements = await self.achievement_system.check_achievements(
                     loser_id, loser_data, loser_game_result, winner_data
                 )
-                
-                # Store newly unlocked achievements for notification
-                if winner_achievements:
-                    game_state["winner_achievements"] = winner_achievements
-                if loser_achievements:
-                    game_state["loser_achievements"] = loser_achievements
             
-            win_msg = locales.WINNER_WITH_RATING.format(
-                name=winner_name,
-                winner_name=winner_name,
-                winner_rating=winner_data["rating"],
-                winner_change=winner_data["rating_change"],
-                loser_name=loser_name,
-                loser_rating=loser_data["rating"],
-                loser_change=loser_data["rating_change"]
-            )
+            # Build enhanced win message with ranks and streaks
+            # #region agent log
+            with open('/home/thathunky/checkers_bot/.cursor/debug.log', 'a') as f:
+                import json
+                f.write(json.dumps({"location":"game_handlers.py:2875","message":"Formatting win message","data":{"winner_name":winner_name,"loser_name":loser_name,"winner_name_type":type(winner_name).__name__,"loser_name_type":type(loser_name).__name__,"winner_name_len":len(winner_name) if winner_name else 0,"loser_name_len":len(loser_name) if loser_name else 0},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"formatting-debug","hypothesisId":"A"})+"\n")
+            # #endregion
+            win_msg = f"🏆 <b>Перемога!</b>\n\n"
+            win_msg += f"{html.escape(winner_name or 'Гравець')} виграв партію!\n\n"
+            win_msg += "📊 <b>Рейтинг:</b>\n"
+            
+            # Winner info with rank badge
+            winner_change = winner_data.get("rating_change", 0)
+            winner_streak = winner_data.get("current_streak", 0)
+            winner_display_name = html.escape(winner_name or 'Гравець')
+            win_msg += f"🏅 {new_winner_rank['icon']} {new_winner_rank['name_uk']} {winner_display_name}: "
+            win_msg += f"{winner_before['rating']:,} → {winner_data['rating']:,} ({winner_change:+d})\n"
+            if winner_streak > 0:
+                win_msg += f"   🔥 Серія перемог: {winner_streak}\n"
+            
+            # Loser info with rank badge
+            loser_change = loser_data.get("rating_change", 0)
+            loser_display_name = html.escape(loser_name or 'Гравець')
+            win_msg += f"\n🏅 {new_loser_rank['icon']} {new_loser_rank['name_uk']} {loser_display_name}: "
+            win_msg += f"{loser_before['rating']:,} → {loser_data['rating']:,} ({loser_change:+d})\n"
+            if loser_change < 0:
+                win_msg += f"   📉 Рейтинг знизився\n"
+            # #region agent log
+            with open('/home/thathunky/checkers_bot/.cursor/debug.log', 'a') as f:
+                import json
+                winner_line = f"🏅 {new_winner_rank['icon']} {new_winner_rank['name_uk']} {winner_display_name}: {winner_before['rating']:,} → {winner_data['rating']:,} ({winner_change:+d})"
+                loser_line = f"🏅 {new_loser_rank['icon']} {new_loser_rank['name_uk']} {loser_display_name}: {loser_before['rating']:,} → {loser_data['rating']:,} ({loser_change:+d})"
+                f.write(json.dumps({"location":"game_handlers.py:2895","message":"Formatted rating lines","data":{"winner_line":winner_line,"loser_line":loser_line},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"formatting-debug","hypothesisId":"B"})+"\n")
+            # #endregion
+            
+            # Rank-up notification for winner
+            if winner_rank_changed:
+                win_msg += f"\n🎉 <b>ВИ ДОСЯГЛИ НОВОГО РАНГУ!</b> 🎉\n"
+                win_msg += f"🏅 {old_winner_rank['icon']} {old_winner_rank['name_uk']} → {new_winner_rank['icon']} {new_winner_rank['name_uk']}\n"
+                win_msg += f"Вітаємо з досягненням!\n"
+            
+            # Progress to next rank for winner
+            if new_winner_rank.get("next_rank"):
+                progress_pct, current_rating, next_rating = get_rank_progress(winner_data["rating"])
+                rating_to_next = next_rating - current_rating if next_rating > current_rating else 0
+                if rating_to_next > 0:
+                    win_msg += f"\n🎯 До наступного рангу: {rating_to_next} ELO\n"
+            
+            # Achievement notifications
+            if winner_achievements:
+                win_msg += "\n"
+                for ach in winner_achievements:
+                    win_msg += f"🎉 <b>НОВЕ ДОСЯГНЕННЯ!</b> 🎉\n"
+                    win_msg += f"{ach.get('icon', '🏆')} <b>{ach.get('name_uk', 'Досягнення')}</b>\n"
+                    win_msg += f"{ach.get('description_uk', '')}\n\n"
+            
+            if loser_achievements:
+                win_msg += "\n"
+                for ach in loser_achievements:
+                    win_msg += f"🎉 <b>НОВЕ ДОСЯГНЕННЯ!</b> 🎉\n"
+                    win_msg += f"{ach.get('icon', '🏆')} <b>{ach.get('name_uk', 'Досягнення')}</b>\n"
+                    win_msg += f"{ach.get('description_uk', '')}\n\n"
         else:
             win_msg = locales.WINNER.format(name=winner_name)
         
@@ -2855,10 +2973,41 @@ class GameHandlers:
         }
         completed_at = completed_game_data["completed_at"]
         if self.game_data_repo:
-            self.game_data_repo.save_completed_game(completed_game_data)
-            # Add reference for both players
-            self.game_data_repo.add_user_game_reference(game_state["blue_player_id"], game_id, completed_at)
-            self.game_data_repo.add_user_game_reference(game_state["yellow_player_id"], game_id, completed_at)
+            # Log game save attempt
+            logger.info(
+                f"Attempting to save completed game {game_id} for players "
+                f"{game_state['blue_player_id']} and {game_state['yellow_player_id']}"
+            )
+            
+            # Save game data first - validation happens inside save_completed_game
+            if self.game_data_repo.save_completed_game(completed_game_data):
+                # Verify the game was actually saved to database
+                if self.game_data_repo.verify_game_saved(game_id):
+                    # Add reference for both players only after successful save and verification
+                    logger.debug(f"Game {game_id} verified in database, adding user references")
+                    ref1_success = self.game_data_repo.add_user_game_reference(
+                        game_state["blue_player_id"], game_id, completed_at
+                    )
+                    ref2_success = self.game_data_repo.add_user_game_reference(
+                        game_state["yellow_player_id"], game_id, completed_at
+                    )
+                    
+                    if not ref1_success or not ref2_success:
+                        logger.warning(
+                            f"Game {game_id} saved but failed to add some user references. "
+                            f"Blue player ref: {ref1_success}, Yellow player ref: {ref2_success}"
+                        )
+                else:
+                    logger.error(
+                        f"Game {game_id} save reported success but verification failed. "
+                        f"Game may not be in database. Not adding user references."
+                    )
+            else:
+                logger.error(
+                    f"Failed to save completed game {game_id} for players "
+                    f"{game_state['blue_player_id']} and {game_state['yellow_player_id']}. "
+                    f"Check logs above for validation or database errors."
+                )
         
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("📺 Переглянути гру", callback_data=f"replay_{game_id}_0")
@@ -2873,7 +3022,8 @@ class GameHandlers:
                     context.bot,
                     inline_message_id=inline_message_id,
                     text=final_message,
-                    reply_markup=keyboard
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML
                 )
             except (asyncio.TimeoutError, Exception) as e:
                 logger.warning(f"[_handle_game_end] Failed to update inline game over message: {e}")
@@ -2887,7 +3037,8 @@ class GameHandlers:
                     chat_id=game_state["opponent_chat_id"],
                     message_id=game_state["opponent_message_id"],
                     text=final_message,
-                    reply_markup=keyboard
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML
                 )
             except (asyncio.TimeoutError, Exception) as e:
                 logger.warning(f"[_handle_game_end] Failed to update opponent game over message: {e}")
@@ -2899,7 +3050,8 @@ class GameHandlers:
                     chat_id=game_state["challenger_chat_id"],
                     message_id=game_state["challenger_message_id"],
                     text=final_message,
-                    reply_markup=keyboard
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML
                 )
             except (asyncio.TimeoutError, Exception) as e:
                 logger.warning(f"[_handle_game_end] Failed to update challenger game over message: {e}")
@@ -3011,7 +3163,7 @@ class GameHandlers:
         await query.answer()
     
     async def myrating_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /myrating command - show user's rating."""
+        """Handle /myrating command - show user's rating with enhanced statistics."""
         if not self.rating_system:
             await update.message.reply_text("Система рейтингу недоступна.")
             return
@@ -3023,22 +3175,136 @@ class GameHandlers:
             await update.message.reply_text(locales.NO_GAMES_PLAYED)
             return
         
-        rank = await self.rating_system.get_player_rank(user.id)
+        # Get rank tier information
+        rank_info = get_rank(player_data["rating"])
+        leaderboard_rank = await self.rating_system.get_player_rank(user.id)
         
-        message = locales.RATING_INFO.format(
-            name=user.first_name,
-            rating=player_data["rating"],
-            rank=rank or "?",
-            games_played=player_data["games_played"],
-            wins=player_data["wins"],
-            losses=player_data["losses"]
-        )
+        # Calculate win rate
+        wins = player_data.get("wins", 0)
+        losses = player_data.get("losses", 0)
+        draws = player_data.get("draws", 0)
+        total_games = wins + losses + draws
+        win_rate = (wins / total_games * 100) if total_games > 0 else 0.0
         
-        await update.message.reply_text(message)
+        # Get achievement summary
+        achievement_count = 0
+        total_achievements = 0
+        last_achievement = None
+        if self.achievement_system:
+            player_achievements = await self.achievement_system.get_player_achievements(user.id)
+            all_achievements = await self.achievement_system.get_all_achievements()
+            achievement_count = len(player_achievements)
+            total_achievements = len(all_achievements)
+            if player_achievements:
+                last_achievement = player_achievements[0]  # Most recent
+        
+        # Calculate average rating change
+        total_gained = player_data.get("total_rating_gained", 0)
+        total_lost = player_data.get("total_rating_lost", 0)
+        avg_change = 0.0
+        if total_games > 0:
+            avg_change = (total_gained - total_lost) / total_games
+        
+        # Get progress to next rank
+        progress_pct, current_rating, next_rating = get_rank_progress(player_data["rating"])
+        rating_to_next = next_rating - current_rating if next_rating > current_rating else 0
+        
+        # Build enhanced message
+        message = f"📊 <b>Профіль гравця: {html.escape(user.first_name)}</b>\n\n"
+        
+        # Rank and rating
+        message += f"🏅 Ранг: {rank_info['name_uk']} {rank_info['icon']}\n"
+        best_rating = player_data.get("best_rating", player_data["rating"])
+        if best_rating > player_data["rating"]:
+            message += f"⭐ Рейтинг: {player_data['rating']:,} (найкращий: {best_rating:,})\n"
+        else:
+            message += f"⭐ Рейтинг: {player_data['rating']:,}\n"
+        
+        if leaderboard_rank:
+            message += f"📈 Місце: #{leaderboard_rank}\n"
+        message += "\n"
+        
+        # Statistics
+        message += "🎮 <b>Статистика:</b>\n"
+        message += f"   • Ігор: {total_games}\n"
+        message += f"   • Перемог: {wins} ({win_rate:.1f}%)\n"
+        message += f"   • Програшів: {losses}\n"
+        if draws > 0:
+            message += f"   • Нічиїх: {draws}\n"
+        message += "\n"
+        
+        # Streaks
+        current_streak = player_data.get("current_streak", 0)
+        best_streak = player_data.get("best_streak", 0)
+        if current_streak > 0 or best_streak > 0:
+            message += "🔥 <b>Серія перемог:</b> "
+            if current_streak > 0:
+                message += f"{current_streak}"
+            else:
+                message += "0"
+            if best_streak > current_streak:
+                message += f" (найкраща: {best_streak})"
+            message += "\n\n"
+        
+        # Additional statistics
+        has_additional = False
+        additional_parts = []
+        
+        if avg_change != 0:
+            additional_parts.append(f"   • Середня зміна рейтингу: {avg_change:+.1f}")
+            has_additional = True
+        
+        longest_game = player_data.get("longest_game")
+        if longest_game:
+            additional_parts.append(f"   • Найдовша гра: {longest_game} ходів")
+            has_additional = True
+        
+        fastest_win = player_data.get("fastest_win")
+        if fastest_win:
+            additional_parts.append(f"   • Найшвидша перемога: {fastest_win} ходів")
+            has_additional = True
+        
+        perfect_games = player_data.get("perfect_games", 0)
+        if perfect_games > 0:
+            additional_parts.append(f"   • Ідеальних ігор: {perfect_games}")
+            has_additional = True
+        
+        comeback_wins = player_data.get("comeback_wins", 0)
+        if comeback_wins > 0:
+            additional_parts.append(f"   • Перемог з відставанням: {comeback_wins}")
+            has_additional = True
+        
+        if has_additional:
+            message += "📊 <b>Додатково:</b>\n"
+            message += "\n".join(additional_parts)
+            message += "\n\n"
+        
+        # Achievements
+        if self.achievement_system and total_achievements > 0:
+            achievement_pct = int((achievement_count / total_achievements * 100)) if total_achievements > 0 else 0
+            message += f"🏆 <b>Досягнення:</b> {achievement_count}/{total_achievements} ({achievement_pct}%)\n"
+            if last_achievement:
+                message += f"   Останнє: {last_achievement.get('icon', '🏆')} {last_achievement.get('name_uk', 'Досягнення')}\n"
+            message += "\n"
+        
+        # Progress to next rank
+        if rating_to_next > 0 and next_rating > current_rating:
+            message += f"🎯 До наступного рангу: {rating_to_next} ELO\n"
+            if rank_info.get("next_rank"):
+                next_rank = rank_info["next_rank"]
+                # Create progress bar
+                bar_length = 20
+                filled = int(progress_pct / 100 * bar_length)
+                bar = "█" * filled + "░" * (bar_length - filled)
+                message += f"{rank_info['icon']} {rank_info['name_uk']} → {next_rank['icon']} {next_rank['name_uk']}\n"
+                message += f"[{bar}] {int(progress_pct)}% ({current_rating} / {next_rating})\n"
+        
+        await update.message.reply_text(message, parse_mode=ParseMode.HTML)
     
     async def ratings_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /ratings command - show leaderboard with pagination."""
         message = update.message or update.effective_message
+        user = update.effective_user
 
         if not self.rating_system:
             await message.reply_text("Система рейтингу недоступна.")
@@ -3063,6 +3329,7 @@ class GameHandlers:
             page=0,
             edit=edit,
             is_private_chat=self._is_private_chat(update.effective_chat),
+            author_user_id=user.id if user else None,
         )
 
     async def ratings_page_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3077,9 +3344,27 @@ class GameHandlers:
             await self._send_main_menu(query.message, edit=True)
             return
 
-        # Parse page number from callback data: ratings_page_N
-        _, _, page_str = query.data.split("_")
-        page = int(page_str)
+        # Parse page number and user ID from callback data: ratings_page_{page}_{user_id} or ratings_page_{page} (old format)
+        try:
+            parts = query.data.split("_")
+            if len(parts) >= 4:
+                # New format: ratings_page_{page}_{user_id}
+                page_str = parts[2]
+                page = int(page_str)
+                authorized_user_id = int(parts[3])
+            else:
+                # Old format: ratings_page_{page} (backward compatibility)
+                page_str = parts[2]
+                page = int(page_str)
+                authorized_user_id = None
+        except (ValueError, IndexError):
+            await query.answer("❌ Невірний формат запиту.", show_alert=True)
+            return
+
+        # Authorization check: only the command author can use buttons
+        if authorized_user_id is not None and query.from_user.id != authorized_user_id:
+            await query.answer("❌ Це не ваше повідомлення!", show_alert=True)
+            return
 
         target = query.message or query
         await self._send_leaderboard(
@@ -3087,6 +3372,7 @@ class GameHandlers:
             page=page,
             edit=True,
             is_private_chat=self._is_private_chat(update.effective_chat),
+            author_user_id=authorized_user_id if authorized_user_id is not None else query.from_user.id,
         )
 
     async def _send_leaderboard(
@@ -3096,6 +3382,7 @@ class GameHandlers:
         edit: bool = False,
         *,
         is_private_chat: bool = True,
+        author_user_id: int = None,
     ):
         """Send or edit leaderboard message with pagination."""
         PLAYERS_PER_PAGE = 15
@@ -3135,14 +3422,43 @@ class GameHandlers:
             else:
                 medal = f"{idx}."
             
-            text += f"{medal} {player['username']} — {player['rating']} ELO ({player['wins']}W/{player['losses']}L)\n"
+            # Get rank information
+            rank_info = get_rank(player.get("rating", 800))
+            rank_badge = f"{rank_info['icon']} {rank_info['name_uk']}"
+            
+            # Calculate win rate
+            wins = player.get("wins", 0)
+            losses = player.get("losses", 0)
+            total_games = wins + losses
+            win_rate = (wins / total_games * 100) if total_games > 0 else 0.0
+            
+            # Get streak
+            current_streak = player.get("current_streak", 0)
+            
+            # Build entry
+            text += f"{medal} {rank_badge} | {html.escape(player.get('username', 'Unknown'))} — {player.get('rating', 0):,} ELO\n"
+            
+            # Add streak and win rate on second line
+            details = []
+            if current_streak > 0:
+                details.append(f"🔥 Серія: {current_streak}")
+            details.append(f"{wins}W/{losses}L ({win_rate:.1f}%)")
+            if details:
+                text += f"   {' | '.join(details)}\n"
         
-        # Navigation buttons
+        # Navigation buttons (include user ID for authorization if provided)
         buttons = []
-        if page > 0:
-            buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"ratings_page_{page - 1}"))
-        if page < total_pages - 1:
-            buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"ratings_page_{page + 1}"))
+        if author_user_id is not None:
+            if page > 0:
+                buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"ratings_page_{page - 1}_{author_user_id}"))
+            if page < total_pages - 1:
+                buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"ratings_page_{page + 1}_{author_user_id}"))
+        else:
+            # Backward compatibility: old format without user ID
+            if page > 0:
+                buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"ratings_page_{page - 1}"))
+            if page < total_pages - 1:
+                buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"ratings_page_{page + 1}"))
 
         rows = [buttons] if buttons else []
         if is_private_chat:

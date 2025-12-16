@@ -272,6 +272,7 @@ async def post_init(application: Application):
             BotCommand("checkersreplay", "📺 Історія моїх ігор"),
             BotCommand("myrating", "📊 Показати мій рейтинг"),
             BotCommand("ratings", "🏆 Таблиця лідерів"),
+            BotCommand("achievements", "🏆 Показати досягнення"),
         ]
         await application.bot.set_my_commands(commands)
         logger.info("Command hints set successfully")
@@ -447,7 +448,7 @@ def main():
         CallbackQueryHandler(handlers.achievement_category_callback, pattern="^ach_category_")
     )
     application.add_handler(
-        CallbackQueryHandler(handlers.achievement_back_callback, pattern="^ach_back$")
+        CallbackQueryHandler(handlers.achievement_back_callback, pattern="^ach_back")
     )
     
     # Debug: catch-all callback handler to log all callbacks (must be last)

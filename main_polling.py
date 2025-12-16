@@ -81,7 +81,8 @@ async def post_init(application: Application):
         BotCommand("checkersplay", "🎮 Почати нову гру в Шашки"),
         BotCommand("checkersreplay", "📺 Історія моїх ігор"),
         BotCommand("myrating", "📊 Показати мій рейтинг"),
-        BotCommand("ratings", "🏆 Таблиця лідерів")
+        BotCommand("ratings", "🏆 Таблиця лідерів"),
+        BotCommand("achievements", "🏆 Показати досягнення"),
     ]
     await application.bot.set_my_commands(commands)
     logger.info("Command hints set successfully")

@@ -21,7 +21,7 @@ DRAW = "🤝 Нічия!"
 RATING_INFO = "📊 Рейтинг гравця {name}:\n\n⭐ Рейтинг: {rating}\n🏅 Місце: #{rank}\n🎮 Ігор: {games_played}\n✅ Перемог: {wins}\n❌ Програшів: {losses}"
 LEADERBOARD_TITLE = "🏆 Топ-{count} гравців\n\n"
 LEADERBOARD_ENTRY = "{rank}. {name} — {rating} ELO ({wins}W/{losses}L)"
-NO_GAMES_PLAYED = "Ви ще не зіграли жодної гри!\nВикористайте /checkersplay щоб почати."
+NO_GAMES_PLAYED = "Ви ще не зіграли жодної гри!\nВикористайте `/checkersplay` щоб почати."
 
 # Errors
 ERROR_FORCE_JUMP = "⚠️ Ви повинні бити! Виберіть хід з битям."
