@@ -85,6 +85,16 @@ INLINE_CHALLENGE_JOIN = "⚔️ Приєднатися"
 INLINE_CHALLENGE_EXPIRED = "❌ Виклик закінчився або вже використано."
 INLINE_CHALLENGE_SELF_JOIN = "❌ Ви не можете приєднатися до власного виклику."
 INLINE_CHALLENGE_NOT_FOUND = "❌ Виклик не знайдено."
+
+# Inline Challenge Modes
+INLINE_CHALLENGE_CASUAL_TITLE = "🎲 Виклик (Без рейтингу)"
+INLINE_CHALLENGE_CASUAL_DESC = "Створити виклик без зміни рейтингу"
+INLINE_CHALLENGE_RANKED_TITLE = "⚡ Виклик (Рейтинг)"
+INLINE_CHALLENGE_RANKED_DESC = "Створити рейтинговий виклик"
+INLINE_CHALLENGE_PRACTICE_TITLE = "📚 Виклик (Тренування)"
+INLINE_CHALLENGE_PRACTICE_DESC = "Створити виклик для тренування"
+INLINE_CHALLENGE_MSG_RANKED = "⚡ <b>Рейтинговий виклик на гру в Шашки!</b>\n\n{name} хоче зіграти рейтингову гру!\nНатисніть кнопку нижче, щоб приєднатися."
+INLINE_CHALLENGE_MSG_PRACTICE = "📚 <b>Виклик на тренувальну гру в Шашки!</b>\n\n{name} хоче потренуватися!\nНатисніть кнопку нижче, щоб приєднатися."
 PROFILE_TEMPLATE = (
     "👤 {name}\n"
     "⭐ Рейтинг: {rating}\n"

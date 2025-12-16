@@ -6,12 +6,42 @@ Persistent SQLite database tracking player ratings across all chats.
 import aiosqlite
 from typing import Optional, List, Tuple
 import logging
+from ranks import get_rank, get_rank_by_name
 
 logger = logging.getLogger(__name__)
 
 # ELO Constants
-INITIAL_RATING = 1200  # Standard starting rating for beginners
-K_FACTOR = 32  # Higher K-factor for casual play (makes rating changes more responsive)
+INITIAL_RATING = 800  # Lower starting rating for more engaging progression
+BASE_K_FACTOR = 32  # Base K-factor (used as fallback)
+
+
+def get_k_factor(games_played: int) -> int:
+    """
+    Get dynamic K-factor based on number of games played.
+    
+    New players get higher K-factor for more exciting rating changes.
+    Experienced players get lower K-factor for more stable ratings.
+    
+    Args:
+        games_played: Number of games the player has played
+        
+    Returns:
+        K-factor value (24-64)
+    """
+    if games_played <= 5:
+        return 64  # Very volatile for new players
+    elif games_played <= 10:
+        return 48
+    elif games_played <= 20:
+        return 40
+    elif games_played <= 30:
+        return 36
+    elif games_played <= 50:
+        return 32  # Standard
+    elif games_played <= 100:
+        return 28
+    else:
+        return 24  # Stable for veterans
 
 
 class RatingSystem:
@@ -24,18 +54,66 @@ class RatingSystem:
     async def initialize(self):
         """Create database tables if they don't exist."""
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS players (
-                    user_id INTEGER PRIMARY KEY,
-                    username TEXT,
-                    rating INTEGER DEFAULT 1200,
-                    games_played INTEGER DEFAULT 0,
-                    wins INTEGER DEFAULT 0,
-                    losses INTEGER DEFAULT 0,
-                    draws INTEGER DEFAULT 0,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+            # Check if table exists and has new columns
+            async with db.execute("PRAGMA table_info(players)") as cursor:
+                columns = {row[1] for row in await cursor.fetchall()}
+            
+            if not columns:
+                # Create new table with all fields
+                await db.execute("""
+                    CREATE TABLE players (
+                        user_id INTEGER PRIMARY KEY,
+                        username TEXT,
+                        rating INTEGER DEFAULT 800,
+                        games_played INTEGER DEFAULT 0,
+                        wins INTEGER DEFAULT 0,
+                        losses INTEGER DEFAULT 0,
+                        draws INTEGER DEFAULT 0,
+                        current_streak INTEGER DEFAULT 0,
+                        best_streak INTEGER DEFAULT 0,
+                        best_rating INTEGER DEFAULT 800,
+                        peak_rank TEXT,
+                        total_rating_gained INTEGER DEFAULT 0,
+                        total_rating_lost INTEGER DEFAULT 0,
+                        perfect_games INTEGER DEFAULT 0,
+                        comeback_wins INTEGER DEFAULT 0,
+                        fastest_win INTEGER,
+                        longest_game INTEGER,
+                        games_this_week INTEGER DEFAULT 0,
+                        games_this_month INTEGER DEFAULT 0,
+                        last_game_date DATE,
+                        season_rating INTEGER DEFAULT 800,
+                        season_games INTEGER DEFAULT 0,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+            else:
+                # Add new columns if they don't exist (migration)
+                new_columns = {
+                    "current_streak": "INTEGER DEFAULT 0",
+                    "best_streak": "INTEGER DEFAULT 0",
+                    "best_rating": "INTEGER DEFAULT 800",
+                    "peak_rank": "TEXT",
+                    "total_rating_gained": "INTEGER DEFAULT 0",
+                    "total_rating_lost": "INTEGER DEFAULT 0",
+                    "perfect_games": "INTEGER DEFAULT 0",
+                    "comeback_wins": "INTEGER DEFAULT 0",
+                    "fastest_win": "INTEGER",
+                    "longest_game": "INTEGER",
+                    "games_this_week": "INTEGER DEFAULT 0",
+                    "games_this_month": "INTEGER DEFAULT 0",
+                    "last_game_date": "DATE",
+                    "season_rating": "INTEGER DEFAULT 800",
+                    "season_games": "INTEGER DEFAULT 0",
+                }
+                
+                for col_name, col_type in new_columns.items():
+                    if col_name not in columns:
+                        try:
+                            await db.execute(f"ALTER TABLE players ADD COLUMN {col_name} {col_type}")
+                        except aiosqlite.OperationalError:
+                            pass  # Column might already exist
+            
             await db.commit()
             logger.info(f"Rating database initialized at {self.db_path}")
     
@@ -87,29 +165,44 @@ class RatingSystem:
     def calculate_elo_change(
         winner_rating: int,
         loser_rating: int,
-        k_factor: int = K_FACTOR
+        winner_games: int = 0,
+        loser_games: int = 0,
+        k_factor: Optional[int] = None
     ) -> tuple[int, int]:
         """
-        Calculate ELO rating changes for a game using standard formula.
+        Calculate ELO rating changes for a game using dynamic K-factor.
         
         Formula: R_new = R_old + K × (Actual - Expected)
         
         Args:
             winner_rating: Current rating of winner
             loser_rating: Current rating of loser
-            k_factor: K-factor (higher = more volatile, default 32 for casual play)
+            winner_games: Number of games winner has played
+            loser_games: Number of games loser has played
+            k_factor: Optional fixed K-factor (uses dynamic if None)
         
         Returns:
             Tuple of (winner_new_rating, loser_new_rating)
         """
-        # Calculate expected scores (probability of winning)
+        # Use dynamic K-factor for each player, then average to maintain zero-sum
+        if k_factor is None:
+            winner_k = get_k_factor(winner_games)
+            loser_k = get_k_factor(loser_games)
+            # Use average K-factor to maintain zero-sum property
+            avg_k = (winner_k + loser_k) / 2
+        else:
+            avg_k = k_factor
+        
+        # Calculate expected score for winner (probability of winning)
+        # expected_winner + expected_loser must equal 1.0
         expected_winner = 1 / (1 + 10 ** ((loser_rating - winner_rating) / 400))
-        expected_loser = 1 / (1 + 10 ** ((winner_rating - loser_rating) / 400))
+        expected_loser = 1 - expected_winner  # Derive from winner to ensure they sum to 1.0
         
         # Actual scores: 1.0 for win, 0.0 for loss
         # Rating change = K × (Actual - Expected)
-        winner_change = round(k_factor * (1.0 - expected_winner))
-        loser_change = round(k_factor * (0.0 - expected_loser))
+        winner_change = round(avg_k * (1.0 - expected_winner))
+        # Ensure zero-sum property: loser loses exactly what winner gains
+        loser_change = -winner_change
         
         new_winner_rating = winner_rating + winner_change
         new_loser_rating = loser_rating + loser_change
@@ -121,72 +214,217 @@ class RatingSystem:
         winner_id: int,
         winner_name: str,
         loser_id: int,
-        loser_name: str
+        loser_name: str,
+        move_count: int = 0,
+        winner_pieces_lost: int = 0,
+        loser_pieces_lost: int = 0
     ) -> Tuple[dict, dict]:
         """
-        Record a game result and update ELO ratings.
+        Record a game result and update ELO ratings with dynamic K-factor and statistics.
+        
+        Args:
+            winner_id: User ID of winner
+            winner_name: Name of winner
+            loser_id: User ID of loser
+            loser_name: Name of loser
+            move_count: Number of moves in the game (optional)
+            winner_pieces_lost: Number of pieces winner lost (optional, for perfect game tracking)
+            loser_pieces_lost: Number of pieces loser lost (optional)
         
         Returns:
-            Tuple of (winner_data, loser_data) with updated ratings
+            Tuple of (winner_data, loser_data) with updated ratings and statistics
         """
-        # Get current ratings
+        from datetime import date
+        
+        # Get current ratings and statistics
         winner = await self.get_player(winner_id, winner_name)
         loser = await self.get_player(loser_id, loser_name)
         
-        # Calculate new ratings
-        new_winner_rating, new_loser_rating = self.calculate_elo_change(
-            winner["rating"], loser["rating"]
-        )
+        winner_games = winner.get("games_played", 0)
+        loser_games = loser.get("games_played", 0)
         
-        # Update database
-        async with aiosqlite.connect(self.db_path) as db:
-            # Update winner
-            await db.execute(
-                """UPDATE players 
-                   SET rating = ?,
-                       games_played = games_played + 1,
-                       wins = wins + 1,
-                       updated_at = CURRENT_TIMESTAMP
-                   WHERE user_id = ?""",
-                (new_winner_rating, winner_id)
-            )
-            
-            # Update loser
-            await db.execute(
-                """UPDATE players 
-                   SET rating = ?,
-                       games_played = games_played + 1,
-                       losses = losses + 1,
-                       updated_at = CURRENT_TIMESTAMP
-                   WHERE user_id = ?""",
-                (new_loser_rating, loser_id)
-            )
-            
-            await db.commit()
+        # Calculate new ratings with dynamic K-factor
+        new_winner_rating, new_loser_rating = self.calculate_elo_change(
+            winner["rating"],
+            loser["rating"],
+            winner_games,
+            loser_games
+        )
         
         # Calculate rating changes
         winner_change = new_winner_rating - winner["rating"]
         loser_change = new_loser_rating - loser["rating"]
         
+        # Update streaks
+        winner_streak = winner.get("current_streak", 0) + 1
+        winner_best_streak = max(winner.get("best_streak", 0), winner_streak)
+        loser_streak = 0  # Reset on loss
+        loser_best_streak = loser.get("best_streak", 0)  # Keep best
+        
+        # Update best rating
+        winner_best_rating = max(winner.get("best_rating", new_winner_rating), new_winner_rating)
+        loser_best_rating = loser.get("best_rating", new_loser_rating)  # Only update if increased
+        
+        # Check for rank changes
+        old_winner_rank = get_rank(winner["rating"])
+        new_winner_rank = get_rank(new_winner_rating)
+        rank_changed = old_winner_rank["min_rating"] != new_winner_rank["min_rating"]
+        
+        # Update peak rank
+        winner_peak_rank = winner.get("peak_rank")
+        if winner_peak_rank:
+            old_peak_rank_info = get_rank_by_name(winner_peak_rank)
+            if old_peak_rank_info and new_winner_rank["min_rating"] > old_peak_rank_info["min_rating"]:
+                winner_peak_rank = new_winner_rank["name_uk"]
+        else:
+            winner_peak_rank = new_winner_rank["name_uk"]
+        
+        # Track rating changes
+        winner_total_gained = winner.get("total_rating_gained", 0) + max(0, winner_change)
+        winner_total_lost = winner.get("total_rating_lost", 0) + max(0, -winner_change)
+        loser_total_gained = loser.get("total_rating_gained", 0) + max(0, loser_change)
+        loser_total_lost = loser.get("total_rating_lost", 0) + max(0, -loser_change)
+        
+        # Check for perfect game (no pieces lost)
+        winner_perfect = winner_pieces_lost == 0
+        if winner_perfect:
+            winner_perfect_games = winner.get("perfect_games", 0) + 1
+        else:
+            winner_perfect_games = winner.get("perfect_games", 0)
+        
+        # Check for comeback win (winning from rating deficit)
+        rating_deficit = winner["rating"] - loser["rating"]
+        if rating_deficit < -100:  # Winner was 100+ rating lower
+            winner_comeback_wins = winner.get("comeback_wins", 0) + 1
+        else:
+            winner_comeback_wins = winner.get("comeback_wins", 0)
+        
+        # Update fastest/slowest games
+        winner_fastest = winner.get("fastest_win")
+        if move_count > 0 and (winner_fastest is None or move_count < winner_fastest):
+            winner_fastest = move_count
+        
+        loser_longest = loser.get("longest_game", 0)
+        if move_count > loser_longest:
+            loser_longest = move_count
+        
+        # Update weekly/monthly counters (simplified - would need date tracking)
+        today = date.today()
+        last_game_date = winner.get("last_game_date")
+        if last_game_date:
+            try:
+                if isinstance(last_game_date, str):
+                    last_date = date.fromisoformat(last_game_date)
+                else:
+                    last_date = last_game_date
+                # Reset weekly/monthly if needed (simplified logic)
+                winner_games_week = winner.get("games_this_week", 0) + 1
+                winner_games_month = winner.get("games_this_month", 0) + 1
+            except:
+                winner_games_week = 1
+                winner_games_month = 1
+        else:
+            winner_games_week = 1
+            winner_games_month = 1
+        
+        loser_games_week = loser.get("games_this_week", 0) + 1
+        loser_games_month = loser.get("games_this_month", 0) + 1
+        
+        # Update database
+        async with aiosqlite.connect(self.db_path) as db:
+            # Update winner with all new fields
+            await db.execute("""
+                UPDATE players 
+                SET rating = ?,
+                    games_played = games_played + 1,
+                    wins = wins + 1,
+                    current_streak = ?,
+                    best_streak = ?,
+                    best_rating = ?,
+                    peak_rank = ?,
+                    total_rating_gained = ?,
+                    total_rating_lost = ?,
+                    perfect_games = ?,
+                    comeback_wins = ?,
+                    fastest_win = ?,
+                    games_this_week = ?,
+                    games_this_month = ?,
+                    last_game_date = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ?
+            """, (
+                new_winner_rating,
+                winner_streak,
+                winner_best_streak,
+                winner_best_rating,
+                winner_peak_rank,
+                winner_total_gained,
+                winner_total_lost,
+                winner_perfect_games,
+                winner_comeback_wins,
+                winner_fastest,
+                winner_games_week,
+                winner_games_month,
+                today.isoformat(),
+                winner_id
+            ))
+            
+            # Update loser
+            await db.execute("""
+                UPDATE players 
+                SET rating = ?,
+                    games_played = games_played + 1,
+                    losses = losses + 1,
+                    current_streak = ?,
+                    total_rating_gained = ?,
+                    total_rating_lost = ?,
+                    longest_game = ?,
+                    games_this_week = ?,
+                    games_this_month = ?,
+                    last_game_date = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ?
+            """, (
+                new_loser_rating,
+                loser_streak,
+                loser_total_gained,
+                loser_total_lost,
+                loser_longest,
+                loser_games_week,
+                loser_games_month,
+                today.isoformat(),
+                loser_id
+            ))
+            
+            await db.commit()
+        
         logger.info(
             f"Game recorded: {winner_name} ({winner['rating']} → {new_winner_rating}, "
-            f"{'+' if winner_change >= 0 else ''}{winner_change}) defeats "
-            f"{loser_name} ({loser['rating']} → {new_loser_rating}, "
-            f"{'+' if loser_change >= 0 else ''}{loser_change})"
+            f"{'+' if winner_change >= 0 else ''}{winner_change}, K={get_k_factor(winner_games)}) "
+            f"defeats {loser_name} ({loser['rating']} → {new_loser_rating}, "
+            f"{'+' if loser_change >= 0 else ''}{loser_change}, K={get_k_factor(loser_games)})"
         )
         
+        # Return updated data
         return {
             **winner,
             "rating": new_winner_rating,
             "rating_change": winner_change,
-            "games_played": winner["games_played"] + 1,
-            "wins": winner["wins"] + 1
+            "games_played": winner_games + 1,
+            "wins": winner.get("wins", 0) + 1,
+            "current_streak": winner_streak,
+            "best_streak": winner_best_streak,
+            "best_rating": winner_best_rating,
+            "peak_rank": winner_peak_rank,
+            "rank_changed": rank_changed,
+            "new_rank": new_winner_rank if rank_changed else None,
         }, {
             **loser,
             "rating": new_loser_rating,
             "rating_change": loser_change,
-            "games_played": loser["games_played"] + 1,
-            "losses": loser["losses"] + 1
+            "games_played": loser_games + 1,
+            "losses": loser.get("losses", 0) + 1,
+            "current_streak": loser_streak,
         }
     
     async def get_leaderboard(self, limit: int = 15, offset: int = 0) -> tuple[list, int]:

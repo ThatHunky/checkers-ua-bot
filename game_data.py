@@ -33,10 +33,10 @@ class GameDataRepository:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS completed_games (
                 game_id TEXT PRIMARY KEY,
-                red_player_id INTEGER NOT NULL,
-                red_player_name TEXT NOT NULL,
-                white_player_id INTEGER NOT NULL,
-                white_player_name TEXT NOT NULL,
+                blue_player_id INTEGER NOT NULL,
+                blue_player_name TEXT NOT NULL,
+                yellow_player_id INTEGER NOT NULL,
+                yellow_player_name TEXT NOT NULL,
                 winner_id INTEGER NOT NULL,
                 winner_name TEXT NOT NULL,
                 winner_color TEXT NOT NULL,
@@ -85,16 +85,16 @@ class GameDataRepository:
             
             cursor.execute("""
                 INSERT OR REPLACE INTO completed_games 
-                (game_id, red_player_id, red_player_name, white_player_id, 
-                 white_player_name, winner_id, winner_name, winner_color,
+                (game_id, blue_player_id, blue_player_name, yellow_player_id, 
+                 yellow_player_name, winner_id, winner_name, winner_color,
                  initial_board, move_history, final_board, completed_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 game_data["game_id"],
-                game_data["red_player_id"],
-                game_data["red_player_name"],
-                game_data["white_player_id"],
-                game_data["white_player_name"],
+                game_data["blue_player_id"],
+                game_data["blue_player_name"],
+                game_data["yellow_player_id"],
+                game_data["yellow_player_name"],
                 game_data["winner_id"],
                 game_data["winner_name"],
                 game_data["winner_color"],
@@ -138,10 +138,10 @@ class GameDataRepository:
             
             return {
                 "game_id": row["game_id"],
-                "red_player_id": row["red_player_id"],
-                "red_player_name": row["red_player_name"],
-                "white_player_id": row["white_player_id"],
-                "white_player_name": row["white_player_name"],
+                "blue_player_id": row["blue_player_id"],
+                "blue_player_name": row["blue_player_name"],
+                "yellow_player_id": row["yellow_player_id"],
+                "yellow_player_name": row["yellow_player_name"],
                 "winner_id": row["winner_id"],
                 "winner_name": row["winner_name"],
                 "winner_color": row["winner_color"],

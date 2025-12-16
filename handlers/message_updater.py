@@ -35,34 +35,34 @@ class MessageUpdater:
     @staticmethod
     def _get_players_message(game_state: dict) -> str:
         """Get message showing both players with hyperlinked first names."""
-        red_player_id = game_state.get("red_player_id")
-        red_player_name = game_state["red_player_name"]
-        white_player_id = game_state.get("white_player_id")
-        white_player_name = game_state["white_player_name"]
+        blue_player_id = game_state.get("blue_player_id", game_state.get("red_player_id"))
+        blue_player_name = game_state.get("blue_player_name", game_state.get("red_player_name", "Blue"))
+        yellow_player_id = game_state.get("yellow_player_id", game_state.get("white_player_id"))
+        yellow_player_name = game_state.get("yellow_player_name", game_state.get("white_player_name", "Yellow"))
         
         # Create hyperlinked first names
-        red_tag = f'<a href="tg://user?id={red_player_id}">{red_player_name}</a>' if red_player_id else red_player_name
-        white_tag = f'<a href="tg://user?id={white_player_id}">{white_player_name}</a>' if white_player_id else white_player_name
+        blue_tag = f'<a href="tg://user?id={blue_player_id}">{blue_player_name}</a>' if blue_player_id else blue_player_name
+        yellow_tag = f'<a href="tg://user?id={yellow_player_id}">{yellow_player_name}</a>' if yellow_player_id else yellow_player_name
         
-        return f"🔵 {red_tag}  vs  🟡 {white_tag}"
+        return f"🔵 {blue_tag}  vs  🟡 {yellow_tag}"
     
     @staticmethod
     def _get_turn_message(game_state: dict) -> str:
         """Get turn message for current player with hyperlinked first name."""
         import locales
-        from engine import RED, WHITE
+        from engine import BLUE, YELLOW
         
         current_turn = game_state["current_turn"]
         
-        if current_turn == RED:
-            player_id = game_state.get("red_player_id")
-            name = game_state["red_player_name"]
+        if current_turn == BLUE:
+            player_id = game_state.get("blue_player_id")
+            name = game_state.get("blue_player_name", game_state.get("red_player_name", "Blue"))
             # Create hyperlinked first name
             player_tag = f'<a href="tg://user?id={player_id}">{name}</a>' if player_id else name
             return locales.TURN_RED.format(player_tag=player_tag)
         else:
-            player_id = game_state.get("white_player_id")
-            name = game_state["white_player_name"]
+            player_id = game_state.get("yellow_player_id")
+            name = game_state.get("yellow_player_name", game_state.get("white_player_name", "Yellow"))
             # Create hyperlinked first name
             player_tag = f'<a href="tg://user?id={player_id}">{name}</a>' if player_id else name
             return locales.TURN_WHITE.format(player_tag=player_tag)

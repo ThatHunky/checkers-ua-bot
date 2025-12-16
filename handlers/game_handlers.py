@@ -35,8 +35,9 @@ from .constants import (
 
 logger = logging.getLogger(__name__)
 
-from engine import CheckersEngine, WHITE, RED, Move
+from engine import CheckersEngine, YELLOW, BLUE, Move
 from repository import GameRepository
+from achievements import AchievementSystem
 from matchmaking import MatchmakingService
 import locales
 
@@ -50,6 +51,7 @@ class GameHandlers:
         self.repo = repository
         self.rating_system = rating_system
         self.game_data_repo = game_data_repo
+        self.achievement_system = None  # Will be set from main.py
         self.matchmaking = MatchmakingService(repository, rating_system)
     
     @staticmethod
@@ -146,7 +148,7 @@ class GameHandlers:
         # Initialize engine
         engine = CheckersEngine()
         board_state = engine.board
-        first_turn = WHITE  # Yellow moves first
+        first_turn = YELLOW  # Yellow moves first
         
         # Get first names from repository if not in user dict
         red_user_data = self.repo.get_user_by_id(red_user["user_id"])
@@ -169,12 +171,12 @@ class GameHandlers:
         game_state = {
             "board": board_state,
             "current_turn": first_turn,
-            "red_player_id": int(red_user["user_id"]),
-            "red_player_name": red_first_name,
-            "red_player_username": red_user.get("username"),
-            "white_player_id": int(white_user["user_id"]),
-            "white_player_name": white_first_name,
-            "white_player_username": white_user.get("username"),
+            "blue_player_id": int(red_user["user_id"]),
+            "blue_player_name": red_first_name,
+            "blue_player_username": red_user.get("username"),
+            "yellow_player_id": int(white_user["user_id"]),
+            "yellow_player_name": white_first_name,
+            "yellow_player_username": white_user.get("username"),
             "move_count": 0,
             "created_at": datetime.utcnow().isoformat(),
             "last_activity": datetime.utcnow().isoformat(),
@@ -186,12 +188,12 @@ class GameHandlers:
         board_text = BoardRenderer.render(board_state)
         keyboard = BoardRenderer.create_move_keyboard(engine, move_count=0)
         
-        red_name = html.escape(game_state["red_player_name"])
-        white_name = html.escape(game_state["white_player_name"])
+        blue_name = html.escape(game_state["blue_player_name"])
+        yellow_name = html.escape(game_state["yellow_player_name"])
         info_text = (
             f"🎮 <b>Гра розпочалась!</b>\n\n"
-            f"🟡 {white_name} (ви ходите першими)\n"
-            f"🔵 {red_name}\n\n"
+            f"🟡 {yellow_name} (ви ходите першими)\n"
+            f"🔵 {blue_name}\n\n"
             f"Хід Жовтих."
         )
 
@@ -266,11 +268,11 @@ class GameHandlers:
             if not data:
                 continue
 
-            if data["red_player_id"] == user.id:
-                opponent = data["white_player_name"]
+            if data["blue_player_id"] == user.id:
+                opponent = data["yellow_player_name"]
                 color = "синіх"
-            elif data["white_player_id"] == user.id:
-                opponent = data["red_player_name"]
+            elif data["yellow_player_id"] == user.id:
+                opponent = data["blue_player_name"]
                 color = "жовтих"
             else:
                 opponent = "суперник"
@@ -299,28 +301,119 @@ class GameHandlers:
         query_text = (query.query or "").strip().lower()
         user = query.from_user
 
-        # If the inline query is empty or "play"/"start", show challenge option
+        # If the inline query is empty or "play"/"start", show challenge options for different modes
         if not query_text or query_text in ("play", "start", "гра", "почати"):
-            challenge_msg = locales.INLINE_CHALLENGE_MSG.format(name=user.first_name or user.username or "Гравець")
-            results = [
-                InlineQueryResultArticle(
-                    id="challenge",
-                    title=locales.INLINE_CHALLENGE_TITLE,
-                    description=locales.INLINE_CHALLENGE_DESC,
-                    input_message_content=InputTextMessageContent(
-                        challenge_msg,
-                        parse_mode=ParseMode.HTML
-                    ),
-                    reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton(
-                            locales.INLINE_CHALLENGE_JOIN,
-                            callback_data="inline_challenge_join"
-                        )
-                    ]])
-                )
-            ]
+            user_name = user.first_name or user.username or "Гравець"
+            
+            # Casual mode (default)
+            casual_msg = locales.INLINE_CHALLENGE_MSG.format(name=user_name)
+            casual_result = InlineQueryResultArticle(
+                id="challenge_casual",
+                title=locales.INLINE_CHALLENGE_CASUAL_TITLE,
+                description=locales.INLINE_CHALLENGE_CASUAL_DESC,
+                input_message_content=InputTextMessageContent(
+                    casual_msg,
+                    parse_mode=ParseMode.HTML
+                ),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        locales.INLINE_CHALLENGE_JOIN,
+                        callback_data="inline_challenge_join"
+                    )
+                ]])
+            )
+            
+            # Ranked mode
+            ranked_msg = locales.INLINE_CHALLENGE_MSG_RANKED.format(name=user_name)
+            ranked_result = InlineQueryResultArticle(
+                id="challenge_ranked",
+                title=locales.INLINE_CHALLENGE_RANKED_TITLE,
+                description=locales.INLINE_CHALLENGE_RANKED_DESC,
+                input_message_content=InputTextMessageContent(
+                    ranked_msg,
+                    parse_mode=ParseMode.HTML
+                ),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        locales.INLINE_CHALLENGE_JOIN,
+                        callback_data="inline_challenge_join"
+                    )
+                ]])
+            )
+            
+            # Practice mode
+            practice_msg = locales.INLINE_CHALLENGE_MSG_PRACTICE.format(name=user_name)
+            practice_result = InlineQueryResultArticle(
+                id="challenge_practice",
+                title=locales.INLINE_CHALLENGE_PRACTICE_TITLE,
+                description=locales.INLINE_CHALLENGE_PRACTICE_DESC,
+                input_message_content=InputTextMessageContent(
+                    practice_msg,
+                    parse_mode=ParseMode.HTML
+                ),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        locales.INLINE_CHALLENGE_JOIN,
+                        callback_data="inline_challenge_join"
+                    )
+                ]])
+            )
+            
+            results = [casual_result, ranked_result, practice_result]
             await query.answer(results, cache_time=0, is_personal=True)
             return
+
+        # If query contains @username or "challenge @username", show challenge option for that user
+        username = None
+        if query_text.startswith("@"):
+            username = query_text[1:].split()[0]
+        elif "challenge" in query_text:
+            parts = query_text.split()
+            for i, part in enumerate(parts):
+                if part == "challenge" and i + 1 < len(parts):
+                    username = parts[i + 1].lstrip("@")
+                    break
+        
+        if username:
+            # Check if user exists
+            opponent_info = self.repo.get_user_by_username(username)
+            if opponent_info:
+                challenge_msg = (
+                    f"🎮 <b>{user.first_name or user.username or 'Гравець'}</b> викликає "
+                    f"<b>@{username}</b> на гру в Українські Шашки!"
+                )
+                results = [
+                    InlineQueryResultArticle(
+                        id=f"challenge_{username}",
+                        title=f"🎮 Викликати @{username}",
+                        description=f"Викликати {opponent_info.get('first_name', username)} на гру",
+                        input_message_content=InputTextMessageContent(
+                            challenge_msg,
+                            parse_mode=ParseMode.HTML
+                        ),
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton(
+                                "✅ Прийняти виклик",
+                                callback_data="accept_inline"
+                            )
+                        ]])
+                    )
+                ]
+                await query.answer(results, cache_time=0, is_personal=True)
+                return
+            else:
+                results = [
+                    InlineQueryResultArticle(
+                        id="user_not_found",
+                        title="❌ Користувача не знайдено",
+                        description=f"@{username} ще не використовував цього бота",
+                        input_message_content=InputTextMessageContent(
+                            f"❌ Користувача @{username} не знайдено. Він має використати /start з ботом спочатку."
+                        )
+                    )
+                ]
+                await query.answer(results, cache_time=0, is_personal=True)
+                return
 
         # If query contains a code, provide a simple inline share message with the supplied code
         share_text = (
@@ -353,23 +446,37 @@ class GameHandlers:
         logger.info("Inline result chosen: result_id=%s, inline_message_id=%s, user=%s", 
                    result_id, inline_message_id, user.id)
 
+        if not inline_message_id:
+            logger.warning("ChosenInlineResult has no inline_message_id result_id=%s user=%s", 
+                          result_id, user.id)
+            # Challenge will be created lazily when button is clicked
+
         # If challenge option was selected, create and save challenge
-        if result_id == "challenge" and inline_message_id:
-            # Determine chat type from query (if available)
-            # For inline messages, we don't have direct chat_id, but we can infer from query context
-            # Default to casual mode for inline challenges
+        # Parse mode from result_id: challenge, challenge_casual, challenge_ranked, challenge_practice
+        if result_id.startswith("challenge") and inline_message_id:
+            # Extract mode from result_id
+            if result_id == "challenge" or result_id == "challenge_casual":
+                mode = "casual"
+            elif result_id == "challenge_ranked":
+                mode = "ranked"
+            elif result_id == "challenge_practice":
+                mode = "practice"
+            else:
+                # Default to casual for backward compatibility
+                mode = "casual"
+            
             challenge_data = {
                 "creator_id": user.id,
                 "creator_name": user.first_name or user.username or "Гравець",
                 "creator_username": user.username,
                 "inline_message_id": inline_message_id,
-                "mode": "casual"  # Default to casual for inline challenges
+                "mode": mode
             }
             
             # Save challenge to repository
             if self.repo.save_inline_challenge(inline_message_id, challenge_data):
-                logger.info("Inline challenge created: inline_message_id=%s, creator=%s", 
-                           inline_message_id, user.id)
+                logger.info("Inline challenge created: inline_message_id=%s, creator=%s, mode=%s", 
+                           inline_message_id, user.id, mode)
             else:
                 logger.error("Failed to save inline challenge: inline_message_id=%s", inline_message_id)
 
@@ -484,8 +591,8 @@ class GameHandlers:
         else:
             # Old format (backward compatibility): allow if user is one of the game players
             # This handles game end message replay buttons
-            if (current_user_id != game_data.get("red_player_id") and 
-                current_user_id != game_data.get("white_player_id")):
+            if (current_user_id != game_data.get("blue_player_id") and 
+                current_user_id != game_data.get("yellow_player_id")):
                 await query.answer("❌ Тільки гравці цієї гри можуть переглядати повтор.", show_alert=True)
                 return
             # For old format, use current user as authorized_user_id for pagination buttons
@@ -499,7 +606,7 @@ class GameHandlers:
 
         header = (
             f"📺 Повтор гри {game_id}\n"
-            f"🔵 {game_data['red_player_name']} vs 🟡 {game_data['white_player_name']}"
+            f"🔵 {game_data.get('blue_player_name', game_data.get('red_player_name', 'Blue'))} vs 🟡 {game_data.get('yellow_player_name', game_data.get('white_player_name', 'Yellow'))}"
         )
 
         if step == total_steps:
@@ -621,119 +728,176 @@ class GameHandlers:
     async def inline_challenge_join_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle joining an inline challenge and start a game."""
         query = update.callback_query
-        await query.answer()
-
-        inline_message_id = query.inline_message_id
-        if not inline_message_id:
-            await query.answer("❌ Це не inline повідомлення.", show_alert=True)
-            return
-
-        logger.info(
-            "[inline_challenge:join] user=%s inline_message_id=%s",
-            query.from_user.id,
-            inline_message_id,
-        )
-
-        # Get challenge data
-        challenge = self.repo.get_inline_challenge(inline_message_id)
-        if not challenge:
-            logger.info("[inline_challenge:join] challenge not found inline_message_id=%s user=%s", 
-                       inline_message_id, query.from_user.id)
-            await query.answer(locales.INLINE_CHALLENGE_NOT_FOUND, show_alert=True)
-            return
-
-        creator_user_id = challenge.get("creator_id")
-        if query.from_user.id == creator_user_id:
-            logger.info("[inline_challenge:join] creator self-join blocked inline_message_id=%s user=%s", 
-                       inline_message_id, query.from_user.id)
-            await query.answer(locales.INLINE_CHALLENGE_SELF_JOIN, show_alert=True)
-            return
-
-        mode = challenge.get("mode", "casual")
-        creator_name = challenge.get("creator_name", "Гравець")
-        creator_username = challenge.get("creator_username")
         
-        # Get first names from repository if available
-        creator_user_data = self.repo.get_user_by_id(creator_user_id)
-        creator_first_name = (
-            creator_name or
-            (creator_user_data.get("first_name") if creator_user_data else None) or
-            creator_username or
-            "Гравець"
-        )
-        
-        white_user_data = self.repo.get_user_by_id(query.from_user.id)
-        white_first_name = (
-            query.from_user.first_name or
-            (white_user_data.get("first_name") if white_user_data else None) or
-            query.from_user.username or
-            "Гравець"
-        )
-
-        # Prepare user data for game start
-        # For inline games, we need to use the chat where the challenge was sent
-        # Since inline messages don't have a direct chat_id, we'll need to handle this differently
-        # The game will be played in the inline message itself
-        red_user = {
-            "user_id": creator_user_id,
-            "username": creator_username,
-            "first_name": creator_first_name,
-            "chat_id": None,  # Inline messages don't have chat_id
-        }
-        white_user = {
-            "user_id": query.from_user.id,
-            "username": query.from_user.username,
-            "first_name": white_first_name,
-            "chat_id": None,  # Inline messages don't have chat_id
-        }
-
-        # Initialize engine
-        engine = CheckersEngine()
-        board_state = engine.board
-        first_turn = WHITE  # Yellow moves first
-
-        # Prepare game state
-        game_state = {
-            "board": board_state,
-            "current_turn": first_turn,
-            "red_player_id": int(red_user["user_id"]),
-            "red_player_name": creator_first_name,
-            "red_player_username": creator_username,
-            "white_player_id": int(white_user["user_id"]),
-            "white_player_name": white_first_name,
-            "white_player_username": query.from_user.username,
-            "move_count": 0,
-            "created_at": datetime.utcnow().isoformat(),
-            "last_activity": datetime.utcnow().isoformat(),
-            "is_private_match": False,
-            "is_inline": True,
-            "inline_message_id": inline_message_id,
-            "mode": mode,
-        }
-
-        # Save inline game
-        self.repo.save_inline_game(inline_message_id, game_state)
-
-        # Delete challenge after game starts
-        self.repo.delete_inline_challenge(inline_message_id)
-
-        # Update inline message with game board using the standard update method
         try:
-            await self._update_inline_game_message(
-                context.bot,
-                inline_message_id,
-                engine,
-                game_state
-            )
             logger.info(
-                "[inline_challenge:join] game started inline_message_id=%s creator=%s opponent=%s mode=%s",
-                inline_message_id,
-                creator_user_id,
+                "[inline_challenge:join] callback received user=%s callback_data=%s",
                 query.from_user.id,
-                mode,
+                query.data,
             )
+            
+            inline_message_id = query.inline_message_id
+            
+            if not inline_message_id:
+                logger.warning("[inline_challenge:join] no inline_message_id user=%s", query.from_user.id)
+                await query.answer("❌ Це не inline повідомлення.", show_alert=True)
+                return
+
+            logger.info(
+                "[inline_challenge:join] user=%s inline_message_id=%s",
+                query.from_user.id,
+                inline_message_id,
+            )
+
+            # Get challenge data
+            challenge = self.repo.get_inline_challenge(inline_message_id)
+            
+            if not challenge:
+                # Try lazy creation - if this is a challenge message, create challenge on first click
+                logger.info("[inline_challenge:join] challenge not found, attempting lazy creation inline_message_id=%s user=%s", 
+                           inline_message_id, query.from_user.id)
+                
+                # Create challenge with first clicker as creator
+                challenge_data = {
+                    "creator_id": query.from_user.id,
+                    "creator_name": query.from_user.first_name or query.from_user.username or "Гравець",
+                    "creator_username": query.from_user.username,
+                    "inline_message_id": inline_message_id,
+                    "mode": "casual",
+                    "lazy_created": True  # Flag to indicate this was created lazily
+                }
+                
+                # Save the challenge
+                if self.repo.save_inline_challenge(inline_message_id, challenge_data):
+                    logger.info("[inline_challenge:join] lazy challenge created inline_message_id=%s creator=%s", 
+                               inline_message_id, query.from_user.id)
+                    challenge = challenge_data
+                else:
+                    logger.error("[inline_challenge:join] failed to create lazy challenge inline_message_id=%s", 
+                                inline_message_id)
+                    await query.answer(locales.INLINE_CHALLENGE_NOT_FOUND, show_alert=True)
+                    return
+
+            creator_user_id = challenge.get("creator_id")
+            
+            if query.from_user.id == creator_user_id:
+                logger.info("[inline_challenge:join] creator self-join blocked inline_message_id=%s user=%s", 
+                           inline_message_id, query.from_user.id)
+                await query.answer(locales.INLINE_CHALLENGE_SELF_JOIN, show_alert=True)
+                return
+            
+            # Answer the callback query after validation
+            await query.answer()
+
+            mode = challenge.get("mode", "casual")
+            creator_name = challenge.get("creator_name", "Гравець")
+            creator_username = challenge.get("creator_username")
+            
+            # Get first names from repository if available
+            creator_user_data = self.repo.get_user_by_id(creator_user_id)
+            creator_first_name = (
+                creator_name or
+                (creator_user_data.get("first_name") if creator_user_data else None) or
+                creator_username or
+                "Гравець"
+            )
+            
+            white_user_data = self.repo.get_user_by_id(query.from_user.id)
+            white_first_name = (
+                query.from_user.first_name or
+                (white_user_data.get("first_name") if white_user_data else None) or
+                query.from_user.username or
+                "Гравець"
+            )
+
+            # Prepare user data for game start
+            # For inline games, we need to use the chat where the challenge was sent
+            # Since inline messages don't have a direct chat_id, we'll need to handle this differently
+            # The game will be played in the inline message itself
+            red_user = {
+                "user_id": creator_user_id,
+                "username": creator_username,
+                "first_name": creator_first_name,
+                "chat_id": None,  # Inline messages don't have chat_id
+            }
+            white_user = {
+                "user_id": query.from_user.id,
+                "username": query.from_user.username,
+                "first_name": white_first_name,
+                "chat_id": None,  # Inline messages don't have chat_id
+            }
+
+            # Initialize engine
+            engine = CheckersEngine()
+            board_state = engine.board
+            first_turn = YELLOW  # Yellow moves first
+
+            # Prepare game state
+            game_state = {
+                "board": board_state,
+                "current_turn": first_turn,
+                "blue_player_id": int(red_user["user_id"]),
+                "blue_player_name": creator_first_name,
+                "blue_player_username": creator_username,
+                "yellow_player_id": int(white_user["user_id"]),
+                "yellow_player_name": white_first_name,
+                "yellow_player_username": query.from_user.username,
+                "move_count": 0,
+                "created_at": datetime.utcnow().isoformat(),
+                "last_activity": datetime.utcnow().isoformat(),
+                "is_private_match": False,
+                "is_inline": True,
+                "inline_message_id": inline_message_id,
+                "mode": mode,
+            }
+
+            # Save inline game
+            self.repo.save_inline_game(inline_message_id, game_state)
+
+            # Delete challenge after game starts
+            self.repo.delete_inline_challenge(inline_message_id)
+
+            # Update inline message with game board using the standard update method
+            try:
+                success = await self._update_inline_game_message(
+                    context.bot,
+                    inline_message_id,
+                    engine,
+                    game_state
+                )
+                if success:
+                    logger.info(
+                        "[inline_challenge:join] game started inline_message_id=%s creator=%s opponent=%s mode=%s",
+                        inline_message_id,
+                        creator_user_id,
+                        query.from_user.id,
+                        mode,
+                    )
+                else:
+                    logger.error(
+                        "[inline_challenge:join] failed to update message inline_message_id=%s",
+                        inline_message_id
+                    )
+            except Exception as e:
+                logger.error(
+                    "[inline_challenge:join] exception updating inline message inline_message_id=%s error=%s",
+                    inline_message_id,
+                    e,
+                    exc_info=True
+                )
         except Exception as e:
-            logger.error(f"Failed to update inline message: {e}")
+            logger.error(
+                "[inline_challenge:join] unhandled exception user=%s error=%s",
+                query.from_user.id if query else None,
+                e,
+                exc_info=True
+            )
+            # Try to answer the callback if we haven't already
+            try:
+                if query:
+                    await query.answer("❌ Сталася помилка при обробці запиту.", show_alert=True)
+            except Exception:
+                pass
 
     async def join_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle legacy join callbacks (fallback)."""
@@ -751,6 +915,153 @@ class GameHandlers:
         """Placeholder handler for accepting invites from inline keyboard."""
         query = update.callback_query
         await query.answer("Використайте /join з кодом, щоб приєднатися.")
+
+    async def accept_inline_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle accepting an inline challenge when a user clicks accept_inline button."""
+        query = update.callback_query
+        
+        try:
+            if not query:
+                return
+            
+            callback_data = query.data
+            inline_message_id = query.inline_message_id
+            accepter_user_id = query.from_user.id  # The user who clicked the accept button
+            
+            if not inline_message_id:
+                logger.warning("[accept_inline] no inline_message_id user=%s", accepter_user_id)
+                await query.answer("❌ Це не inline повідомлення.", show_alert=True)
+                return
+            
+            logger.info(
+                "[accept_inline] callback received accepter=%s callback_data=%s inline_message_id=%s",
+                accepter_user_id,
+                callback_data,
+                inline_message_id,
+            )
+            
+            # Get challenge data
+            challenge = self.repo.get_inline_challenge(inline_message_id)
+            
+            if not challenge:
+                # Challenge not found - it may have expired or wasn't created yet
+                logger.info("[accept_inline] challenge not found inline_message_id=%s accepter=%s", 
+                           inline_message_id, accepter_user_id)
+                await query.answer("❌ Виклик не знайдено або вже закінчився.", show_alert=True)
+                return
+            
+            creator_user_id = challenge.get("creator_id")
+            
+            if accepter_user_id == creator_user_id:
+                logger.info("[accept_inline] creator self-join blocked inline_message_id=%s accepter=%s", 
+                           inline_message_id, accepter_user_id)
+                await query.answer(locales.INLINE_CHALLENGE_SELF_JOIN, show_alert=True)
+                return
+            
+            # Answer the callback query after validation
+            await query.answer()
+            
+            mode = challenge.get("mode", "casual")
+            creator_name = challenge.get("creator_name", "Гравець")
+            creator_username = challenge.get("creator_username")
+            
+            # Get first names from repository if available
+            creator_user_data = self.repo.get_user_by_id(creator_user_id)
+            creator_first_name = (
+                creator_name or
+                (creator_user_data.get("first_name") if creator_user_data else None) or
+                creator_username or
+                "Гравець"
+            )
+            
+            accepter_user_data = self.repo.get_user_by_id(accepter_user_id)
+            accepter_first_name = (
+                query.from_user.first_name or
+                (accepter_user_data.get("first_name") if accepter_user_data else None) or
+                query.from_user.username or
+                "Гравець"
+            )
+            
+            # Prepare user data for game start
+            red_user = {
+                "user_id": creator_user_id,
+                "username": creator_username,
+                "first_name": creator_first_name,
+                "chat_id": None,  # Inline messages don't have chat_id
+            }
+            white_user = {
+                "user_id": accepter_user_id,
+                "username": query.from_user.username,
+                "first_name": accepter_first_name,
+                "chat_id": None,  # Inline messages don't have chat_id
+            }
+            
+            # Initialize engine
+            engine = CheckersEngine()
+            board_state = engine.board
+            first_turn = YELLOW  # Yellow moves first
+            
+            # Prepare game state
+            game_state = {
+                "board": board_state,
+                "current_turn": first_turn,
+                "blue_player_id": int(red_user["user_id"]),
+                "blue_player_name": creator_first_name,
+                "blue_player_username": creator_username,
+                "yellow_player_id": int(white_user["user_id"]),
+                "yellow_player_name": accepter_first_name,
+                "yellow_player_username": query.from_user.username,
+                "move_count": 0,
+                "created_at": datetime.utcnow().isoformat(),
+                "last_activity": datetime.utcnow().isoformat(),
+                "is_private_match": False,
+                "is_inline": True,
+                "inline_message_id": inline_message_id,
+                "mode": mode,
+            }
+            
+            # Save inline game
+            self.repo.save_inline_game(inline_message_id, game_state)
+            
+            # Delete challenge after game starts
+            self.repo.delete_inline_challenge(inline_message_id)
+            
+            # Update inline message with game board
+            try:
+                success = await self._update_inline_game_message(
+                    context.bot,
+                    inline_message_id,
+                    engine,
+                    game_state
+                )
+                if success:
+                    logger.info(
+                        "[accept_inline] game started inline_message_id=%s creator=%s accepter=%s mode=%s",
+                        inline_message_id,
+                        creator_user_id,
+                        accepter_user_id,
+                        mode,
+                    )
+                else:
+                    logger.error(
+                        "[accept_inline] failed to update message inline_message_id=%s",
+                        inline_message_id
+                    )
+            except Exception as e:
+                logger.error(
+                    "[accept_inline] exception updating inline message inline_message_id=%s error=%s",
+                    inline_message_id,
+                    e,
+                    exc_info=True
+                )
+        except Exception as e:
+            logger.error(
+                "[accept_inline] unhandled exception accepter=%s error=%s",
+                accepter_user_id if query else None,
+                e,
+                exc_info=True
+            )
+            await query.answer("❌ Помилка при прийнятті виклику.", show_alert=True)
 
     async def decline_private_invite_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle declining an invite from inline keyboard in private chats."""
@@ -1137,16 +1448,16 @@ class GameHandlers:
     def _get_current_player_id(self, game_state: dict) -> Optional[int]:
         """Get the ID of the player whose turn it is."""
         current_turn = game_state.get("current_turn")
-        if current_turn == RED:
-            return game_state.get("red_player_id")
-        elif current_turn == WHITE:
-            return game_state.get("white_player_id")
+        if current_turn == BLUE:
+            return game_state.get("blue_player_id")
+        elif current_turn == YELLOW:
+            return game_state.get("yellow_player_id")
         return None
     
     def _validate_player_in_game(self, user_id: int, game_state: dict) -> bool:
         """Check if user is a player in the game."""
-        return (user_id == game_state.get("red_player_id") or 
-                user_id == game_state.get("white_player_id"))
+        return (user_id == game_state.get("blue_player_id") or 
+                user_id == game_state.get("yellow_player_id"))
     
     def _validate_player_turn(self, user_id: int, game_state: dict) -> bool:
         """Check if it's the user's turn."""
@@ -1356,7 +1667,7 @@ class GameHandlers:
                 "to": move_to_apply.to_pos,
                 "captures": move_to_apply.captures.copy() if move_to_apply.captures else [],
                 "board_before": engine.board.copy(),
-                "player": "blue" if engine.current_turn == RED else "yellow"
+                "player": "blue" if engine.current_turn == BLUE else "yellow"
             }
             game_state.setdefault("move_history", []).append(move_record)
             
@@ -1372,7 +1683,7 @@ class GameHandlers:
                 must_continue = engine.must_continue_capturing(move_to_apply.to_pos)
                 if not must_continue:
                     # Restore the normal turn switch performed inside apply_move
-                    engine.current_turn = RED if previous_turn == WHITE else WHITE
+                    engine.current_turn = BLUE if previous_turn == YELLOW else YELLOW
 
             # Check for winner (after finalizing whose turn it is)
             winner = engine.check_winner()
@@ -1631,10 +1942,10 @@ class GameHandlers:
                 return
 
             # Determine winner (opponent of forfeiting player)
-            if user_id == game_state["red_player_id"]:
-                winner = WHITE  # Opponent wins
+            if user_id == game_state["blue_player_id"]:
+                winner = YELLOW  # Opponent wins
             else:
-                winner = RED  # Opponent wins
+                winner = BLUE  # Opponent wins
             
             # Load engine for final board display
             engine = CheckersEngine()
@@ -1659,7 +1970,7 @@ class GameHandlers:
             )
             
             # Update message to indicate forfeit (modify the final message)
-            winner_name = game_state["white_player_name"] if winner == WHITE else game_state["red_player_name"]
+            winner_name = game_state["yellow_player_name"] if winner == YELLOW else game_state["blue_player_name"]
             forfeit_suffix = "\n(Суперник здався)"
             
             # Re-fetch and update the message with forfeit indication
@@ -1668,10 +1979,10 @@ class GameHandlers:
             mode = game_state.get("mode", "rated")
             
             if self.rating_system and mode == "rated":
-                winner_id = game_state["white_player_id"] if winner == WHITE else game_state["red_player_id"]
-                loser_id = game_state["red_player_id"] if winner == WHITE else game_state["white_player_id"]
-                winner_name_full = game_state["white_player_name"] if winner == WHITE else game_state["red_player_name"]
-                loser_name = game_state["red_player_name"] if winner == WHITE else game_state["white_player_name"]
+                winner_id = game_state["yellow_player_id"] if winner == YELLOW else game_state["blue_player_id"]
+                loser_id = game_state["blue_player_id"] if winner == YELLOW else game_state["yellow_player_id"]
+                winner_name_full = game_state["yellow_player_name"] if winner == YELLOW else game_state["blue_player_name"]
+                loser_name = game_state["blue_player_name"] if winner == YELLOW else game_state["yellow_player_name"]
                 
                 # Get rating data (already recorded in _handle_game_end)
                 winner_data = await self.rating_system.get_player(winner_id, winner_name_full)
@@ -1785,10 +2096,10 @@ class GameHandlers:
             return
         
         # Get opponent name
-        if user.id == game_state["red_player_id"]:
-            opponent_name = game_state["white_player_name"]
+        if user.id == game_state["blue_player_id"]:
+            opponent_name = game_state["yellow_player_name"]
         else:
-            opponent_name = game_state["red_player_name"]
+            opponent_name = game_state["blue_player_name"]
         
         # Show confirmation
         keyboard = InlineKeyboardMarkup([[
@@ -1834,10 +2145,10 @@ class GameHandlers:
             return
         
         # Get opponent name
-        if user.id == game_state["red_player_id"]:
-            opponent_name = game_state["white_player_name"]
+        if user.id == game_state["blue_player_id"]:
+            opponent_name = game_state["yellow_player_name"]
         else:
-            opponent_name = game_state["red_player_name"]
+            opponent_name = game_state["blue_player_name"]
         
         # Show confirmation
         keyboard = InlineKeyboardMarkup([[
@@ -1875,7 +2186,7 @@ class GameHandlers:
             return
         
         # Verify user is a player
-        if user.id != game_state["red_player_id"] and user.id != game_state["white_player_id"]:
+        if user.id != game_state["blue_player_id"] and user.id != game_state["yellow_player_id"]:
             await query.answer("❌ Ви не є гравцем у цій грі!", show_alert=True)
             return
         
@@ -1924,7 +2235,7 @@ class GameHandlers:
         await query.edit_message_text("🚫 Гру скасовано. Рейтинг не змінено.")
         
         # Notify opponent
-        opponent_id = game_state["white_player_id"] if user.id == game_state["red_player_id"] else game_state["red_player_id"]
+        opponent_id = game_state["yellow_player_id"] if user.id == game_state["blue_player_id"] else game_state["blue_player_id"]
         try:
             await context.bot.send_message(
                 chat_id=opponent_id,
@@ -1957,21 +2268,21 @@ class GameHandlers:
             return
         
         # Verify user is a player
-        if user.id != game_state["red_player_id"] and user.id != game_state["white_player_id"]:
+        if user.id != game_state["blue_player_id"] and user.id != game_state["yellow_player_id"]:
             await query.answer("❌ Ви не є гравцем у цій грі!", show_alert=True)
             return
         
         # Determine winner (opponent)
-        if user.id == game_state["red_player_id"]:
-            winner_id = game_state["white_player_id"]
-            winner_name = game_state["white_player_name"]
-            loser_id = game_state["red_player_id"]
-            loser_name = game_state["red_player_name"]
+        if user.id == game_state["blue_player_id"]:
+            winner_id = game_state["yellow_player_id"]
+            winner_name = game_state["yellow_player_name"]
+            loser_id = game_state["blue_player_id"]
+            loser_name = game_state["blue_player_name"]
         else:
-            winner_id = game_state["red_player_id"]
-            winner_name = game_state["red_player_name"]
-            loser_id = game_state["white_player_id"]
-            loser_name = game_state["white_player_name"]
+            winner_id = game_state["blue_player_id"]
+            winner_name = game_state["blue_player_name"]
+            loser_id = game_state["yellow_player_id"]
+            loser_name = game_state["yellow_player_name"]
         
         # Record rating changes
         rating_msg = ""
@@ -2087,6 +2398,240 @@ class GameHandlers:
             f"🗑️ Видалено записів: {count}\n"
             f"📊 Всі гравці почнуть з {1200} ELO."
         )
+    
+    async def achievements_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show player achievements overview."""
+        user = update.effective_user
+        chat = update.effective_chat
+        
+        if not self.achievement_system:
+            await update.message.reply_text("❌ Система досягнень не налаштована.")
+            return
+        
+        # Get player achievements
+        player_achievements = await self.achievement_system.get_player_achievements(user.id)
+        all_achievements = await self.achievement_system.get_all_achievements()
+        
+        unlocked_count = len(player_achievements)
+        total_count = len(all_achievements)
+        percentage = int((unlocked_count / total_count * 100)) if total_count > 0 else 0
+        
+        # Group by category
+        categories = {
+            "milestone": {"name": "🎯 Віхи", "count": 0, "unlocked": 0},
+            "rank": {"name": "🏅 Ранги", "count": 0, "unlocked": 0},
+            "streak": {"name": "🔥 Серії", "count": 0, "unlocked": 0},
+            "victory": {"name": "⚔️ Перемоги", "count": 0, "unlocked": 0},
+            "statistics": {"name": "📊 Статистика", "count": 0, "unlocked": 0},
+            "gameplay": {"name": "🎮 Геймплей", "count": 0, "unlocked": 0},
+            "competitive": {"name": "🏆 Конкуренція", "count": 0, "unlocked": 0},
+            "time": {"name": "⏰ Часові", "count": 0, "unlocked": 0},
+            "special": {"name": "🎲 Особливі", "count": 0, "unlocked": 0},
+            "collection": {"name": "🏅 Колекція", "count": 0, "unlocked": 0},
+        }
+        
+        unlocked_ids = {ach["achievement_id"] for ach in player_achievements}
+        
+        for ach in all_achievements:
+            cat = ach["category"]
+            if cat in categories:
+                categories[cat]["count"] += 1
+                if ach["achievement_id"] in unlocked_ids:
+                    categories[cat]["unlocked"] += 1
+        
+        # Build message
+        message = f"🏆 <b>Ваші Досягнення</b>\n\n"
+        message += f"📊 Загалом: {unlocked_count}/{total_count} ({percentage}%)\n\n"
+        
+        for cat_key, cat_info in categories.items():
+            if cat_info["count"] > 0:
+                status = "✅" if cat_info["unlocked"] == cat_info["count"] else "🔒"
+                message += f"{cat_info['name']}: {cat_info['unlocked']}/{cat_info['count']} {status}\n"
+        
+        # Create keyboard with category buttons
+        keyboard_buttons = []
+        row = []
+        for cat_key, cat_info in list(categories.items())[:5]:
+            if cat_info["count"] > 0:
+                row.append(InlineKeyboardButton(
+                    f"{cat_info['name']} ({cat_info['unlocked']}/{cat_info['count']})",
+                    callback_data=f"ach_category_{cat_key}"
+                ))
+                if len(row) == 2:
+                    keyboard_buttons.append(row)
+                    row = []
+        if row:
+            keyboard_buttons.append(row)
+        
+        # Second row
+        row = []
+        for cat_key, cat_info in list(categories.items())[5:]:
+            if cat_info["count"] > 0:
+                row.append(InlineKeyboardButton(
+                    f"{cat_info['name']} ({cat_info['unlocked']}/{cat_info['count']})",
+                    callback_data=f"ach_category_{cat_key}"
+                ))
+                if len(row) == 2:
+                    keyboard_buttons.append(row)
+                    row = []
+        if row:
+            keyboard_buttons.append(row)
+        
+        keyboard = InlineKeyboardMarkup(keyboard_buttons)
+        
+        await update.message.reply_text(message, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+    
+    async def achievement_category_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show achievements in a specific category."""
+        query = update.callback_query
+        await query.answer()
+        
+        user = query.from_user
+        category = query.data.replace("ach_category_", "")
+        
+        if not self.achievement_system:
+            await query.edit_message_text("❌ Система досягнень не налаштована.")
+            return
+        
+        # Get all achievements in category
+        all_achievements = await self.achievement_system.get_all_achievements()
+        category_achievements = [a for a in all_achievements if a["category"] == category]
+        
+        # Get player achievements
+        player_achievements = await self.achievement_system.get_player_achievements(user.id)
+        unlocked_ids = {ach["achievement_id"] for ach in player_achievements}
+        
+        # Get player data for progress
+        if self.rating_system:
+            player_data = await self.rating_system.get_player(user.id, user.first_name)
+        else:
+            player_data = {}
+        
+        # Build message
+        category_names = {
+            "milestone": "🎯 Віхи",
+            "rank": "🏅 Ранги",
+            "streak": "🔥 Серії",
+            "victory": "⚔️ Перемоги",
+            "statistics": "📊 Статистика",
+            "gameplay": "🎮 Геймплей",
+            "competitive": "🏆 Конкуренція",
+            "time": "⏰ Часові",
+            "special": "🎲 Особливі",
+            "collection": "🏅 Колекція",
+        }
+        
+        message = f"<b>{category_names.get(category, category)}</b>\n\n"
+        
+        for ach in category_achievements[:10]:  # Show first 10
+            is_unlocked = ach["achievement_id"] in unlocked_ids
+            status = "✅" if is_unlocked else "🔒"
+            
+            message += f"{status} {ach['icon']} <b>{ach['name_uk']}</b>\n"
+            message += f"   {ach['description_uk']}\n"
+            
+            if not is_unlocked:
+                # Show progress if available
+                progress = await self.achievement_system.get_achievement_progress(
+                    user.id, ach["achievement_id"], player_data
+                )
+                if progress and not progress.get("unlocked"):
+                    pct = int(progress["progress"])
+                    message += f"   Прогрес: {progress['current']}/{progress['max']} ({pct}%)\n"
+            
+            message += "\n"
+        
+        if len(category_achievements) > 10:
+            message += f"\n... та ще {len(category_achievements) - 10} досягнень"
+        
+        # Back button
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("◀️ Назад", callback_data="ach_back")
+        ]])
+        
+        await query.edit_message_text(message, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+    
+    async def achievement_back_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Return to achievements overview."""
+        query = update.callback_query
+        await query.answer()
+        
+        # Reuse achievements_command logic
+        user = query.from_user
+        
+        if not self.achievement_system:
+            await query.edit_message_text("❌ Система досягнень не налаштована.")
+            return
+        
+        player_achievements = await self.achievement_system.get_player_achievements(user.id)
+        all_achievements = await self.achievement_system.get_all_achievements()
+        
+        unlocked_count = len(player_achievements)
+        total_count = len(all_achievements)
+        percentage = int((unlocked_count / total_count * 100)) if total_count > 0 else 0
+        
+        # Group by category (same logic as achievements_command)
+        categories = {
+            "milestone": {"name": "🎯 Віхи", "count": 0, "unlocked": 0},
+            "rank": {"name": "🏅 Ранги", "count": 0, "unlocked": 0},
+            "streak": {"name": "🔥 Серії", "count": 0, "unlocked": 0},
+            "victory": {"name": "⚔️ Перемоги", "count": 0, "unlocked": 0},
+            "statistics": {"name": "📊 Статистика", "count": 0, "unlocked": 0},
+            "gameplay": {"name": "🎮 Геймплей", "count": 0, "unlocked": 0},
+            "competitive": {"name": "🏆 Конкуренція", "count": 0, "unlocked": 0},
+            "time": {"name": "⏰ Часові", "count": 0, "unlocked": 0},
+            "special": {"name": "🎲 Особливі", "count": 0, "unlocked": 0},
+            "collection": {"name": "🏅 Колекція", "count": 0, "unlocked": 0},
+        }
+        
+        unlocked_ids = {ach["achievement_id"] for ach in player_achievements}
+        
+        for ach in all_achievements:
+            cat = ach["category"]
+            if cat in categories:
+                categories[cat]["count"] += 1
+                if ach["achievement_id"] in unlocked_ids:
+                    categories[cat]["unlocked"] += 1
+        
+        message = f"🏆 <b>Ваші Досягнення</b>\n\n"
+        message += f"📊 Загалом: {unlocked_count}/{total_count} ({percentage}%)\n\n"
+        
+        for cat_key, cat_info in categories.items():
+            if cat_info["count"] > 0:
+                status = "✅" if cat_info["unlocked"] == cat_info["count"] else "🔒"
+                message += f"{cat_info['name']}: {cat_info['unlocked']}/{cat_info['count']} {status}\n"
+        
+        # Create keyboard (same as achievements_command)
+        keyboard_buttons = []
+        row = []
+        for cat_key, cat_info in list(categories.items())[:5]:
+            if cat_info["count"] > 0:
+                row.append(InlineKeyboardButton(
+                    f"{cat_info['name']} ({cat_info['unlocked']}/{cat_info['count']})",
+                    callback_data=f"ach_category_{cat_key}"
+                ))
+                if len(row) == 2:
+                    keyboard_buttons.append(row)
+                    row = []
+        if row:
+            keyboard_buttons.append(row)
+        
+        row = []
+        for cat_key, cat_info in list(categories.items())[5:]:
+            if cat_info["count"] > 0:
+                row.append(InlineKeyboardButton(
+                    f"{cat_info['name']} ({cat_info['unlocked']}/{cat_info['count']})",
+                    callback_data=f"ach_category_{cat_key}"
+                ))
+                if len(row) == 2:
+                    keyboard_buttons.append(row)
+                    row = []
+        if row:
+            keyboard_buttons.append(row)
+        
+        keyboard = InlineKeyboardMarkup(keyboard_buttons)
+        
+        await query.edit_message_text(message, reply_markup=keyboard, parse_mode=ParseMode.HTML)
     
     async def add_legend_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -2226,26 +2771,59 @@ class GameHandlers:
             context: Bot context
             engine: CheckersEngine instance with final board state
             game_state: Current game state
-            winner: RED or WHITE (winner color)
+            winner: BLUE or YELLOW (winner color)
             chat_id: Chat ID (for regular messages)
             message_id: Message ID (for regular messages)
             inline_message_id: Inline message ID (for inline messages)
             query: Optional callback query (for regular messages)
         """
         # Determine winner and loser
-        winner_id = game_state["red_player_id"] if winner == RED else game_state["white_player_id"]
-        winner_name = game_state["red_player_name"] if winner == RED else game_state["white_player_name"]
-        loser_id = game_state["white_player_id"] if winner == RED else game_state["red_player_id"]
-        loser_name = game_state["white_player_name"] if winner == RED else game_state["red_player_name"]
+        winner_id = game_state["blue_player_id"] if winner == BLUE else game_state["yellow_player_id"]
+        winner_name = game_state["blue_player_name"] if winner == BLUE else game_state["yellow_player_name"]
+        loser_id = game_state["yellow_player_id"] if winner == BLUE else game_state["blue_player_id"]
+        loser_name = game_state["yellow_player_name"] if winner == BLUE else game_state["blue_player_name"]
         
         board_text = BoardRenderer.render(engine.board)
         mode = game_state.get("mode", "rated")
         
         # Record rating changes only for rated games if rating system available
         if self.rating_system and mode == "rated":
+            # Get move count from game state if available
+            move_count = game_state.get("move_count", engine.move_count)
+            
             winner_data, loser_data = await self.rating_system.record_game(
-                winner_id, winner_name, loser_id, loser_name
+                winner_id, winner_name, loser_id, loser_name,
+                move_count=move_count
             )
+            
+            # Check achievements for both players
+            if self.achievement_system:
+                # Winner achievements
+                winner_game_result = {
+                    "won": True,
+                    "rating_change": winner_data.get("rating_change", 0),
+                    "move_count": move_count,
+                    "moved_first": game_state.get("current_turn") == YELLOW,  # Simplified
+                }
+                winner_achievements = await self.achievement_system.check_achievements(
+                    winner_id, winner_data, winner_game_result, loser_data
+                )
+                
+                # Loser achievements
+                loser_game_result = {
+                    "won": False,
+                    "rating_change": loser_data.get("rating_change", 0),
+                    "move_count": move_count,
+                }
+                loser_achievements = await self.achievement_system.check_achievements(
+                    loser_id, loser_data, loser_game_result, winner_data
+                )
+                
+                # Store newly unlocked achievements for notification
+                if winner_achievements:
+                    game_state["winner_achievements"] = winner_achievements
+                if loser_achievements:
+                    game_state["loser_achievements"] = loser_achievements
             
             win_msg = locales.WINNER_WITH_RATING.format(
                 name=winner_name,
@@ -2263,13 +2841,13 @@ class GameHandlers:
         game_id = str(uuid.uuid4())[:8]
         completed_game_data = {
             "game_id": game_id,
-            "red_player_id": game_state["red_player_id"],
-            "red_player_name": game_state["red_player_name"],
-            "white_player_id": game_state["white_player_id"],
-            "white_player_name": game_state["white_player_name"],
+            "blue_player_id": game_state["blue_player_id"],
+            "blue_player_name": game_state["blue_player_name"],
+            "yellow_player_id": game_state["yellow_player_id"],
+            "yellow_player_name": game_state["yellow_player_name"],
             "winner_id": winner_id,
             "winner_name": winner_name,
-            "winner_color": "blue" if winner == RED else "yellow",
+            "winner_color": "blue" if winner == BLUE else "yellow",
             "initial_board": game_state.get("initial_board", CheckersEngine.init_board()),
             "move_history": game_state.get("move_history", []),
             "final_board": engine.board.copy(),
@@ -2279,8 +2857,8 @@ class GameHandlers:
         if self.game_data_repo:
             self.game_data_repo.save_completed_game(completed_game_data)
             # Add reference for both players
-            self.game_data_repo.add_user_game_reference(game_state["red_player_id"], game_id, completed_at)
-            self.game_data_repo.add_user_game_reference(game_state["white_player_id"], game_id, completed_at)
+            self.game_data_repo.add_user_game_reference(game_state["blue_player_id"], game_id, completed_at)
+            self.game_data_repo.add_user_game_reference(game_state["yellow_player_id"], game_id, completed_at)
         
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("📺 Переглянути гру", callback_data=f"replay_{game_id}_0")

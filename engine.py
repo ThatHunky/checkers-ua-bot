@@ -8,14 +8,20 @@ from dataclasses import dataclass
 
 # Piece constants
 EMPTY = 0
-WHITE = 1
-WHITE_KING = 2
-RED = 3
-RED_KING = 4
+YELLOW = 1
+YELLOW_KING = 2
+BLUE = 3
+BLUE_KING = 4
+
+# Backward compatibility aliases (deprecated, use YELLOW/BLUE)
+WHITE = YELLOW
+WHITE_KING = YELLOW_KING
+RED = BLUE
+RED_KING = BLUE_KING
 
 # Board is 8x8 = 64 squares, indexed 0-63
 # Index mapping: row * 8 + col
-# Row 0 is top (RED side), Row 7 is bottom (WHITE side)
+# Row 0 is top (BLUE side), Row 7 is bottom (YELLOW side)
 
 @dataclass
 class Move:
@@ -32,7 +38,7 @@ class CheckersEngine:
     
     def __init__(self):
         self.board: List[int] = self.init_board()
-        self.current_turn = WHITE  # WHITE starts (opponent moves first)
+        self.current_turn = YELLOW  # YELLOW starts (opponent moves first)
         self.move_count = 0  # Track total moves made
     
     @staticmethod
@@ -40,17 +46,17 @@ class CheckersEngine:
         """Initialize standard 8x8 checkers starting position."""
         board = [EMPTY] * 64
         
-        # RED pieces (top 3 rows, dark squares only)
+        # BLUE pieces (top 3 rows, dark squares only)
         for row in range(3):
             for col in range(8):
                 if (row + col) % 2 == 1:  # Dark squares
-                    board[row * 8 + col] = RED
+                    board[row * 8 + col] = BLUE
         
-        # WHITE pieces (bottom 3 rows, dark squares only)
+        # YELLOW pieces (bottom 3 rows, dark squares only)
         for row in range(5, 8):
             for col in range(8):
                 if (row + col) % 2 == 1:  # Dark squares
-                    board[row * 8 + col] = WHITE
+                    board[row * 8 + col] = YELLOW
         
         return board
     
@@ -70,16 +76,16 @@ class CheckersEngine:
         return 0 <= row < 8 and 0 <= col < 8
     
     def get_piece_color(self, piece: int) -> Optional[int]:
-        """Get the color of a piece (WHITE or RED)."""
-        if piece in (WHITE, WHITE_KING):
-            return WHITE
-        elif piece in (RED, RED_KING):
-            return RED
+        """Get the color of a piece (YELLOW or BLUE)."""
+        if piece in (YELLOW, YELLOW_KING):
+            return YELLOW
+        elif piece in (BLUE, BLUE_KING):
+            return BLUE
         return None
     
     def is_king(self, piece: int) -> bool:
         """Check if piece is a king."""
-        return piece in (WHITE_KING, RED_KING)
+        return piece in (YELLOW_KING, BLUE_KING)
     
     def get_legal_moves(self, color: int) -> List[Move]:
         """
@@ -124,8 +130,8 @@ class CheckersEngine:
     def _get_man_moves(self, pos: int, row: int, col: int, piece: int) -> List[Move]:
         """Get normal moves for a man (non-king piece)."""
         moves = []
-        # Men move forward only (WHITE moves up, RED moves down)
-        direction = -1 if piece == WHITE else 1
+        # Men move forward only (YELLOW moves up, BLUE moves down)
+        direction = -1 if piece == YELLOW else 1
         
         for dc in [-1, 1]:  # Left and right diagonals
             new_row = row + direction
@@ -135,7 +141,7 @@ class CheckersEngine:
                 new_pos = self.coords_to_pos(new_row, new_col)
                 if self.board[new_pos] == EMPTY:
                     # Check if this move promotes
-                    promotes = (piece == WHITE and new_row == 0) or (piece == RED and new_row == 7)
+                    promotes = (piece == YELLOW and new_row == 0) or (piece == BLUE and new_row == 7)
                     moves.append(Move(pos, new_pos, [], promotes))
         
         return moves
@@ -262,8 +268,8 @@ class CheckersEngine:
                 
                 # Check for instant promotion
                 new_piece = piece
-                if (piece == WHITE and land_row == 0) or (piece == RED and land_row == 7):
-                    new_piece = WHITE_KING if piece == WHITE else RED_KING
+                if (piece == YELLOW and land_row == 0) or (piece == BLUE and land_row == 7):
+                    new_piece = YELLOW_KING if piece == YELLOW else BLUE_KING
                 
                 # Continue searching from landing position
                 self._find_captures_recursive(
@@ -419,7 +425,7 @@ class CheckersEngine:
                     self.board[land_pos] == EMPTY):
                     
                     # Check if piece will promote on landing
-                    will_promote = (piece == WHITE and land_row == 0) or (piece == RED and land_row == 7)
+                    will_promote = (piece == YELLOW and land_row == 0) or (piece == BLUE and land_row == 7)
                     
                     single_hops.append(Move(
                         from_pos=from_pos,
@@ -469,16 +475,16 @@ class CheckersEngine:
         # Handle promotion
         # Promote if: reached king row at end, OR promoted during multi-capture
         to_row, _ = self.pos_to_coords(move.to_pos)
-        reached_king_row = (piece == WHITE and to_row == 0) or (piece == RED and to_row == 7)
+        reached_king_row = (piece == YELLOW and to_row == 0) or (piece == BLUE and to_row == 7)
         
         if move.promoted_during_capture or reached_king_row:
-            if piece in (WHITE, WHITE_KING):
-                self.board[move.to_pos] = WHITE_KING
+            if piece in (YELLOW, YELLOW_KING):
+                self.board[move.to_pos] = YELLOW_KING
             else:
-                self.board[move.to_pos] = RED_KING
+                self.board[move.to_pos] = BLUE_KING
         
         # Switch turn
-        self.current_turn = RED if self.current_turn == WHITE else WHITE
+        self.current_turn = BLUE if self.current_turn == YELLOW else YELLOW
         self.move_count += 1
         
         return True
@@ -486,28 +492,28 @@ class CheckersEngine:
     def check_winner(self) -> Optional[int]:
         """
         Check if there's a winner.
-        Returns WHITE, RED, or None if game continues.
+        Returns YELLOW, BLUE, or None if game continues.
         """
         # Count pieces and check for legal moves
-        white_count = 0
-        red_count = 0
+        yellow_count = 0
+        blue_count = 0
         
         for piece in self.board:
-            if piece in (WHITE, WHITE_KING):
-                white_count += 1
-            elif piece in (RED, RED_KING):
-                red_count += 1
+            if piece in (YELLOW, YELLOW_KING):
+                yellow_count += 1
+            elif piece in (BLUE, BLUE_KING):
+                blue_count += 1
         
         # No pieces left = loss
-        if white_count == 0:
-            return RED
-        if red_count == 0:
-            return WHITE
+        if yellow_count == 0:
+            return BLUE
+        if blue_count == 0:
+            return YELLOW
         
         # No legal moves = loss
         legal_moves = self.get_legal_moves(self.current_turn)
         if not legal_moves:
-            return RED if self.current_turn == WHITE else WHITE
+            return BLUE if self.current_turn == YELLOW else YELLOW
         
         return None
     

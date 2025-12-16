@@ -35,10 +35,10 @@ class GameRepository:
             game_state: Dictionary containing:
                 - board: List[int]
                 - current_turn: int
-                - red_player_id: int
-                - red_player_name: str
-                - white_player_id: int
-                - white_player_name: str
+                - blue_player_id: int
+                - blue_player_name: str
+                - yellow_player_id: int
+                - yellow_player_name: str
                 - created_at: str (ISO format)
         
         Returns:
@@ -151,7 +151,7 @@ class GameRepository:
             Tuple of (chat_id, message_id, game_state) or None if no active game
         """
         for chat_id, message_id, game_state in self.get_all_games():
-            if game_state.get("red_player_id") == user_id or game_state.get("white_player_id") == user_id:
+            if game_state.get("blue_player_id") == user_id or game_state.get("yellow_player_id") == user_id:
                 return (chat_id, message_id, game_state)
         return None
 

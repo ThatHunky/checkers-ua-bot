@@ -24,7 +24,8 @@ from repository import GameRepository
 from handlers import GameHandlers
 from ratings import RatingSystem
 from game_data import GameDataRepository
-from engine import RED, WHITE
+from achievements import AchievementSystem
+from engine import BLUE, YELLOW
 
 # Load environment variables
 load_dotenv()
@@ -68,39 +69,44 @@ async def check_game_timeouts(context: ContextTypes.DEFAULT_TYPE):
             continue
 
         # Check if game has timed out
-        last_activity = datetime.fromisoformat(game_state["last_activity"])
+        try:
+            last_activity = datetime.fromisoformat(game_state["last_activity"])
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Invalid last_activity format for game {chat_id}:{message_id}: {game_state.get('last_activity')}")
+            continue
         if now - last_activity < timeout_delta:
             continue
 
         # Game timed out! Current player loses
         current_turn = game_state["current_turn"]
 
-        if current_turn == RED:
-            loser_id = game_state["red_player_id"]
-            loser_name = game_state["red_player_name"]
-            winner_id = game_state["white_player_id"]
-            winner_name = game_state["white_player_name"]
+        if current_turn == BLUE:
+            loser_id = game_state["blue_player_id"]
+            loser_name = game_state["blue_player_name"]
+            winner_id = game_state["yellow_player_id"]
+            winner_name = game_state["yellow_player_name"]
         else:
-            loser_id = game_state["white_player_id"]
-            loser_name = game_state["white_player_name"]
-            winner_id = game_state["red_player_id"]
-            winner_name = game_state["red_player_name"]
+            loser_id = game_state["yellow_player_id"]
+            loser_name = game_state["yellow_player_name"]
+            winner_id = game_state["blue_player_id"]
+            winner_name = game_state["blue_player_name"]
 
         logger.info(
             f"Game timeout: {loser_name} loses (chat={chat_id}, msg={message_id})"
         )
 
-        # Update ratings
+        # Update ratings (only for rated games)
         rating_msg = ""
-        if _rating_system and game_state.get("move_count", 0) > 0:
+        mode = game_state.get("mode", "rated")
+        if _rating_system and mode == "rated" and game_state.get("move_count", 0) > 0:
             try:
-                changes = await _rating_system.record_game(
+                winner_data, loser_data = await _rating_system.record_game(
                     winner_id, winner_name, loser_id, loser_name
                 )
                 rating_msg = (
                     f"\n\n📊 Рейтинг:\n"
-                    f"{winner_name}: {changes['winner']['rating']} ({changes['winner']['change']:+d})\n"
-                    f"{loser_name}: {changes['loser']['rating']} ({changes['loser']['change']:+d})"
+                    f"{winner_name}: {winner_data['rating']} ({winner_data['rating_change']:+d})\n"
+                    f"{loser_name}: {loser_data['rating']} ({loser_data['rating_change']:+d})"
                 )
             except Exception as e:
                 logger.error(f"Error updating ratings: {e}")
@@ -154,11 +160,15 @@ async def check_game_timeouts(context: ContextTypes.DEFAULT_TYPE):
             continue
 
         # Check if game has timed out
-        last_activity = datetime.fromisoformat(game_state["last_activity"])
-        time_since_activity = now - last_activity
-        logger.info(
-            f"Inline game {inline_message_id}: {time_since_activity.total_seconds()/60:.1f} mins since activity"
-        )
+        try:
+            last_activity = datetime.fromisoformat(game_state["last_activity"])
+            time_since_activity = now - last_activity
+            logger.info(
+                f"Inline game {inline_message_id}: {time_since_activity.total_seconds()/60:.1f} mins since activity"
+            )
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Invalid last_activity format for inline game {inline_message_id}: {game_state.get('last_activity')}")
+            continue
 
         if time_since_activity < timeout_delta:
             continue
@@ -166,32 +176,33 @@ async def check_game_timeouts(context: ContextTypes.DEFAULT_TYPE):
         # Game timed out! Current player loses
         current_turn = game_state["current_turn"]
 
-        if current_turn == RED:
-            loser_id = game_state["red_player_id"]
-            loser_name = game_state["red_player_name"]
-            winner_id = game_state["white_player_id"]
-            winner_name = game_state["white_player_name"]
+        if current_turn == BLUE:
+            loser_id = game_state["blue_player_id"]
+            loser_name = game_state["blue_player_name"]
+            winner_id = game_state["yellow_player_id"]
+            winner_name = game_state["yellow_player_name"]
         else:
-            loser_id = game_state["white_player_id"]
-            loser_name = game_state["white_player_name"]
-            winner_id = game_state["red_player_id"]
-            winner_name = game_state["red_player_name"]
+            loser_id = game_state["yellow_player_id"]
+            loser_name = game_state["yellow_player_name"]
+            winner_id = game_state["blue_player_id"]
+            winner_name = game_state["blue_player_name"]
 
         logger.info(
             f"Inline game timeout: {loser_name} loses (inline_msg={inline_message_id})"
         )
 
-        # Update ratings
+        # Update ratings (only for rated games)
         rating_msg = ""
-        if _rating_system and game_state.get("move_count", 0) > 0:
+        mode = game_state.get("mode", "rated")
+        if _rating_system and mode == "rated" and game_state.get("move_count", 0) > 0:
             try:
-                changes = await _rating_system.record_game(
+                winner_data, loser_data = await _rating_system.record_game(
                     winner_id, winner_name, loser_id, loser_name
                 )
                 rating_msg = (
                     f"\n\n📊 Рейтинг:\n"
-                    f"{winner_name}: {changes['winner']['rating']} ({changes['winner']['change']:+d})\n"
-                    f"{loser_name}: {changes['loser']['rating']} ({changes['loser']['change']:+d})"
+                    f"{winner_name}: {winner_data['rating']} ({winner_data['rating_change']:+d})\n"
+                    f"{loser_name}: {loser_data['rating']} ({loser_data['rating_change']:+d})"
                 )
             except Exception as e:
                 logger.error(f"Error updating ratings: {e}")
@@ -216,11 +227,17 @@ async def check_game_timeouts(context: ContextTypes.DEFAULT_TYPE):
 
 async def post_init(application: Application):
     """Post-initialization callback to set commands and initialize rating system."""
-    # Initialize rating system
-    logger.info(f"Initializing rating system: {DB_PATH}")
-    rating_system = RatingSystem(DB_PATH)
-    await rating_system.initialize()
-    logger.info("Rating system initialized")
+    # Get rating system from bot_data (created in main)
+    rating_system = application.bot_data.get("rating_system")
+    if rating_system:
+        logger.info(f"Initializing rating system: {DB_PATH}")
+        await rating_system.initialize()
+        logger.info("Rating system initialized")
+    
+    # Get achievement system from bot_data (created in main)
+    achievement_system = application.bot_data.get("achievement_system")
+    if achievement_system:
+        logger.info("Achievement system initialized (no async init needed)")
 
     # Initialize game data repository
     logger.info(f"Initializing game data repository: {GAMEDATA_DB_PATH}")
@@ -245,6 +262,7 @@ async def post_init(application: Application):
 
     # Store in bot_data for handler access (overwrite/ensure presence)
     application.bot_data["rating_system"] = rating_system
+    # achievement_system is already stored in bot_data from main()
     application.bot_data["game_data_repo"] = game_data_repo
 
     # Set command hints (non-fatal if rate limited)
@@ -293,11 +311,15 @@ def main():
     # Initialize rating system (sync creation, async init in post_init)
     rating_system = RatingSystem(DB_PATH)
 
+    # Initialize achievement system (no async init needed)
+    achievement_system = AchievementSystem(DB_PATH)
+
     # Initialize game data repository (sync creation, async init in post_init)
     game_data_repo = GameDataRepository(GAMEDATA_DB_PATH)
 
     # Initialize handlers
     handlers = GameHandlers(repository, rating_system, game_data_repo)
+    handlers.achievement_system = achievement_system
 
     # Build application
     application = Application.builder().token(TOKEN).post_init(post_init).build()
@@ -305,6 +327,7 @@ def main():
     # instead of creating separate instances. This ensures the same GameDataRepository
     # used by handlers gets its DB initialized and is used for saving/retrieving replays.
     application.bot_data["rating_system"] = rating_system
+    application.bot_data["achievement_system"] = achievement_system
     application.bot_data["game_data_repo"] = game_data_repo
 
     # Set global references for timeout job
@@ -326,6 +349,7 @@ def main():
     application.add_handler(CommandHandler("forfeit", handlers.forfeit_command))
     application.add_handler(CommandHandler("myrating", handlers.myrating_command))
     application.add_handler(CommandHandler("ratings", handlers.ratings_command))
+    application.add_handler(CommandHandler("achievements", handlers.achievements_command))
     application.add_handler(CommandHandler("join", handlers.join_command))
     application.add_handler(
         CommandHandler("resetrankings", handlers.reset_rankings_command)
@@ -374,6 +398,11 @@ def main():
     )
     application.add_handler(
         CallbackQueryHandler(
+            handlers.accept_inline_callback, pattern="^accept_inline$"
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
             handlers.decline_private_invite_callback, pattern="^decline_invite_"
         )
     )
@@ -414,6 +443,21 @@ def main():
     application.add_handler(
         CallbackQueryHandler(handlers.ratings_page_callback, pattern="^ratings_page_")
     )
+    application.add_handler(
+        CallbackQueryHandler(handlers.achievement_category_callback, pattern="^ach_category_")
+    )
+    application.add_handler(
+        CallbackQueryHandler(handlers.achievement_back_callback, pattern="^ach_back$")
+    )
+    
+    # Debug: catch-all callback handler to log all callbacks (must be last)
+    async def debug_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Debug handler to catch unmatched callbacks."""
+        query = update.callback_query
+        if query:
+            await query.answer("❌ Callback не розпізнано", show_alert=True)
+    
+    application.add_handler(CallbackQueryHandler(debug_callback_handler))
 
     # Start in appropriate mode
     if USE_WEBHOOK:

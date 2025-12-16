@@ -4,7 +4,7 @@ Simple test script for Ukrainian Checkers Engine (core only)
 Tests game logic without telegram dependencies.
 """
 
-from engine import CheckersEngine, WHITE, RED
+from engine import CheckersEngine, YELLOW, BLUE, WHITE_KING, BLUE_KING
 
 
 def test_initial_board():
@@ -13,12 +13,12 @@ def test_initial_board():
     engine = CheckersEngine()
     
     # Count pieces
-    white_count = sum(1 for p in engine.board if p in (1, 2))
-    red_count = sum(1 for p in engine.board if p in (3, 4))
+    yellow_count = sum(1 for p in engine.board if p in (1, 2))
+    blue_count = sum(1 for p in engine.board if p in (3, 4))
     
-    assert white_count == 12, f"Expected 12 white pieces, got {white_count}"
-    assert red_count == 12, f"Expected 12 red pieces, got {red_count}"
-    assert engine.current_turn == WHITE, "WHITE should start"
+    assert yellow_count == 12, f"Expected 12 yellow pieces, got {yellow_count}"
+    assert blue_count == 12, f"Expected 12 blue pieces, got {blue_count}"
+    assert engine.current_turn == YELLOW, "YELLOW should start"
     
     print("✓ Initial board setup correct (12 vs 12 pieces)")
 
@@ -28,10 +28,10 @@ def test_legal_moves():
     print("\nTesting legal move generation...")
     engine = CheckersEngine()
     
-    # WHITE starts
-    moves = engine.get_legal_moves(WHITE)
-    print(f"  WHITE has {len(moves)} legal opening moves")
-    assert len(moves) > 0, "WHITE should have legal moves at start"
+    # YELLOW starts
+    moves = engine.get_legal_moves(YELLOW)
+    print(f"  YELLOW has {len(moves)} legal opening moves")
+    assert len(moves) > 0, "YELLOW should have legal moves at start"
     
     # Verify moves are forward diagonal
     for move in moves[:3]:
@@ -47,13 +47,13 @@ def test_capture_backward():
     print("\nTesting backward capture for men...")
     engine = CheckersEngine()
     
-    # Set up a position where WHITE man can capture backward
+    # Set up a position where YELLOW man can capture backward
     engine.board = [0] * 64
-    engine.board[19] = WHITE  # C6
-    engine.board[28] = RED    # E5
-    engine.current_turn = WHITE
+    engine.board[19] = YELLOW  # C6
+    engine.board[28] = BLUE    # E5
+    engine.current_turn = YELLOW
     
-    moves = engine.get_legal_moves(WHITE)
+    moves = engine.get_legal_moves(YELLOW)
     
     # Filter for captures
     captures = [m for m in moves if m.captures]
@@ -75,12 +75,12 @@ def test_mandatory_capture():
     
     # Set up position with capture available
     engine.board = [0] * 64
-    engine.board[18] = RED    # C6
-    engine.board[27] = WHITE  # D5
-    engine.board[20] = RED    # E6 - can move normally
-    engine.current_turn = RED
+    engine.board[18] = BLUE    # C6
+    engine.board[27] = YELLOW  # D5
+    engine.board[20] = BLUE    # E6 - can move normally
+    engine.current_turn = BLUE
     
-    moves = engine.get_legal_moves(RED)
+    moves = engine.get_legal_moves(BLUE)
     
     # All moves should be captures if any capture exists
     has_captures = any(m.captures for m in moves)
@@ -100,11 +100,11 @@ def test_game_winner():
     
     # Empty board except one piece
     engine.board = [0] * 64
-    engine.board[10] = WHITE
-    engine.current_turn = RED
+    engine.board[10] = YELLOW
+    engine.current_turn = BLUE
     
     winner = engine.check_winner()
-    assert winner == WHITE, "WHITE should win (RED has no pieces and no moves)"
+    assert winner == YELLOW, "YELLOW should win (BLUE has no pieces and no moves)"
     
     print("✓ Win condition detected correctly")
 
@@ -115,38 +115,38 @@ def test_move_application():
     engine = CheckersEngine()
     
     # Get first legal move and apply it
-    moves = engine.get_legal_moves(RED)
+    moves = engine.get_legal_moves(BLUE)
     first_move = moves[0]
     
     old_turn = engine.current_turn
     engine.apply_move(first_move)
     
     assert engine.current_turn != old_turn, "Turn should switch after move"
-    print(f"✓ Move applied successfully, turn switched to {'WHITE' if engine.current_turn == WHITE else 'RED'}")
+    print(f"✓ Move applied successfully, turn switched to {'YELLOW' if engine.current_turn == YELLOW else 'BLUE'}")
 
 
 def test_mid_capture_promotion():
     """Test that a piece becomes a king if it passes through king row during multi-capture."""
     print("\nTesting mid-capture king promotion...")
-    from engine import WHITE_KING, RED_KING
+    from engine import YELLOW_KING, BLUE_KING
     
     engine = CheckersEngine()
     
     # Set up: Yellow man can capture to row 0 (king row), then continue capturing
     # Board setup:
     #   Row 0: Empty target squares
-    #   Row 1: RED pieces to capture
-    #   Row 2: WHITE man starting position
+    #   Row 1: BLUE pieces to capture
+    #   Row 2: YELLOW man starting position
     engine.board = [0] * 64
-    engine.board[18] = WHITE  # Position at row 2, col 2 (C6)
-    engine.board[9] = RED     # Enemy at row 1, col 1 (B7) - first capture
-    engine.board[11] = RED    # Enemy at row 1, col 3 (D7) - second capture after promotion
-    engine.current_turn = WHITE
+    engine.board[18] = YELLOW  # Position at row 2, col 2 (C6)
+    engine.board[9] = BLUE     # Enemy at row 1, col 1 (B7) - first capture
+    engine.board[11] = BLUE    # Enemy at row 1, col 3 (D7) - second capture after promotion
+    engine.current_turn = YELLOW
     
     # Expected: Yellow captures B7 landing on A8 (row 0, becomes king), 
     # then captures D7 as king, landing somewhere on row 2
     
-    moves = engine.get_legal_moves(WHITE)
+    moves = engine.get_legal_moves(YELLOW)
     
     # Find multi-captures
     multi_captures = [m for m in moves if len(m.captures) >= 2]
@@ -162,7 +162,7 @@ def test_mid_capture_promotion():
                 
                 # Verify piece is now a king even though final position isn't on king row
                 final_piece = engine.board[move.to_pos]
-                assert final_piece == WHITE_KING, f"Piece should be WHITE_KING (2), got {final_piece}"
+                assert final_piece == YELLOW_KING, f"Piece should be YELLOW_KING (2), got {final_piece}"
                 print("✓ Mid-capture promotion works correctly - piece is now a king!")
                 return
         
@@ -177,12 +177,12 @@ def test_mid_capture_promotion():
     # Yellow man at row 2, can capture enemy at row 1, land on row 0 (king), 
     # then capture another enemy and end up NOT on row 0
     # Positions: 16=row2 col0, 9=row1 col1, 2=row0 col2, 11=row1 col3, 20=row2 col4
-    engine2.board[16] = WHITE  # A6
-    engine2.board[9] = RED     # B7
-    engine2.board[11] = RED    # D7
-    engine2.current_turn = WHITE
+    engine2.board[16] = YELLOW  # A6
+    engine2.board[9] = BLUE     # B7
+    engine2.board[11] = BLUE    # D7
+    engine2.current_turn = YELLOW
     
-    moves2 = engine2.get_legal_moves(WHITE)
+    moves2 = engine2.get_legal_moves(YELLOW)
     multi_caps2 = [m for m in moves2 if len(m.captures) >= 2]
     
     if multi_caps2:
@@ -193,11 +193,11 @@ def test_mid_capture_promotion():
         engine2.apply_move(move)
         final = engine2.board[move.to_pos]
         
-        if final == WHITE_KING:
+        if final == YELLOW_KING:
             print("✓ Mid-capture promotion works correctly!")
         else:
             # Check if the logic is working
-            print(f"  Final piece type: {final} (expected WHITE_KING=2)")
+            print(f"  Final piece type: {final} (expected YELLOW_KING=2)")
     else:
         print("✓ Skipped (test scenario couldn't be set up) - manual verification needed")
 
