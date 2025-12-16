@@ -510,10 +510,15 @@ class CheckersEngine:
         if blue_count == 0:
             return YELLOW
         
-        # No legal moves = loss
-        legal_moves = self.get_legal_moves(self.current_turn)
-        if not legal_moves:
-            return BLUE if self.current_turn == YELLOW else YELLOW
+        # Check legal moves for BOTH players
+        yellow_moves = self.get_legal_moves(YELLOW)
+        blue_moves = self.get_legal_moves(BLUE)
+        
+        # If a player has no legal moves, they lose
+        if not yellow_moves:
+            return BLUE
+        if not blue_moves:
+            return YELLOW
         
         return None
     
