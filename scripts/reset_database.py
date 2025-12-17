@@ -197,8 +197,8 @@ async def populate_achievements():
         ("victory_jackpot", "Jackpot", "Джекпот", "Win against opponent 400+ rating higher", "Виграйте проти суперника на 400+ рейтингу вище", "🎰", "victory", 400),
         ("victory_comeback_100", "Comeback King", "Король Повернень", "Win from 100+ rating deficit", "Виграйте з дефіцитом 100+ рейтингу", "🔄", "victory", 100),
         ("victory_comeback_150", "Invincible Defender", "Непереможний Захисник", "Win from 150+ rating deficit", "Виграйте з дефіцитом 150+ рейтингу", "🛡️", "victory", 150),
-        ("victory_lightning", "Lightning Victory", "Блискавка", "Win a game in under 15 moves", "Виграйте гру менше ніж за 15 ходів", "⚡", "victory", 15),
-        ("victory_hurricane", "Hurricane", "Ураган", "Win a game in under 10 moves", "Виграйте гру менше ніж за 10 ходів", "💨", "victory", 10),
+        ("victory_lightning", "Lightning Victory", "Блискавка", "Win a game in under 25 moves", "Виграйте гру менше ніж за 25 ходів", "⚡", "victory", 25),
+        ("victory_hurricane", "Hurricane", "Ураган", "Win a game in under 20 moves", "Виграйте гру менше ніж за 20 ходів", "💨", "victory", 20),
         ("victory_showman", "Showman", "Шоумен", "Win with perfect game (no pieces lost)", "Виграйте ідеальну гру (без втрати фігур)", "🎪", "victory", 1),
         ("victory_perfect_defense", "Perfect Defense", "Ідеальна Оборона", "Win 3 perfect games", "Виграйте 3 ідеальні гри", "🛡️", "victory", 3),
         ("victory_sniper", "Sniper", "Снайпер", "Win 10 games without losing a single piece total", "Виграйте 10 ігор без втрати жодної фігури", "🎯", "victory", 10),
@@ -258,14 +258,11 @@ async def populate_achievements():
         ("time_weekend_warrior", "Weekend Warrior", "Вихідний Воїн", "Win 10 games on weekends", "Виграйте 10 ігор у вихідні", "🎉", "time", 10),
         ("time_consistency", "Consistency", "Стабільність", "Play at least one game per week for 3 months", "Зіграйте хоча б одну гру на тиждень протягом 3 місяців", "📊", "time", 12),
         
-        # Special Achievements (7)
-        ("special_surprise", "Surprise", "Сюрприз", "Win on your birthday", "Виграйте на день народження", "🎁", "special", 1),
+        # Special Achievements (4) - Removed 3 that require unavailable data
         ("special_holiday", "Holiday", "Святковий", "Win on a major holiday", "Виграйте на велике свято", "🎄", "special", 1),
-        ("special_anniversary", "Anniversary", "Ювілей", "Play on your account anniversary", "Зіграйте на річницю акаунту", "🎊", "special", 1),
+        ("special_anniversary", "Anniversary", "Ювілей", "Play your first game", "Зіграйте свою першу гру", "🎊", "special", 1),
         ("special_target", "Target", "Мета", "Win exactly 100 rating in one game", "Виграйте рівно 100 рейтингу в одній грі", "🎯", "special", 100),
         ("special_random", "Random", "Випадковість", "Win with exactly 50% win rate after 20 games", "Виграйте з рівно 50% перемог після 20 ігор", "🎲", "special", 50),
-        ("special_unique", "Unique", "Унікальний", "Be the first player to reach a new rank", "Станьте першим гравцем, що досягнув нового рангу", "🎪", "special", 1),
-        ("special_pioneer", "Pioneer", "Піонер", "Be among first 100 players to reach 2000+ rating", "Будьте серед перших 100 гравців з рейтингом 2000+", "🌟", "special", 2000),
         
         # Collection Achievements (6)
         ("collection_collector", "Collector", "Колекціонер", "Unlock 10 achievements", "Розблокуйте 10 досягнень", "🎖️", "collection", 10),

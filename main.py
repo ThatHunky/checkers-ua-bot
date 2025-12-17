@@ -61,9 +61,24 @@ async def check_game_timeouts(context: ContextTypes.DEFAULT_TYPE):
 
     now = datetime.utcnow()
     timeout_delta = timedelta(minutes=GAME_TIMEOUT_MINUTES)
+    processed_game_keys: set[str] = set()
 
     # Check regular games (group chats, private matches)
     for chat_id, message_id, game_state in _repository.get_all_games():
+        # Stable per-game key to prevent double-processing (private matches are stored twice in Redis).
+        if (
+            game_state.get("is_private_match")
+            and game_state.get("challenger_chat_id")
+            and game_state.get("challenger_message_id")
+        ):
+            game_key = f"priv:{game_state['challenger_chat_id']}:{game_state['challenger_message_id']}"
+        else:
+            game_key = f"chat:{chat_id}:{message_id}"
+
+        if game_key in processed_game_keys:
+            continue
+        processed_game_keys.add(game_key)
+
         # Skip games without activity tracking (old games)
         if "last_activity" not in game_state:
             continue
@@ -98,10 +113,20 @@ async def check_game_timeouts(context: ContextTypes.DEFAULT_TYPE):
         # Update ratings (only for rated games)
         rating_msg = ""
         mode = game_state.get("mode", "rated")
-        if _rating_system and mode == "rated" and game_state.get("move_count", 0) > 0:
+        move_count = int(game_state.get("move_count", 0) or 0)
+        if _rating_system and mode == "rated" and move_count > 0:
             try:
+                winner_color = "yellow" if winner_id == game_state.get("yellow_player_id") else "blue"
                 winner_data, loser_data = await _rating_system.record_game(
-                    winner_id, winner_name, loser_id, loser_name
+                    winner_id,
+                    winner_name,
+                    loser_id,
+                    loser_name,
+                    game_key=game_key,
+                    move_count=move_count,
+                    winner_pieces_lost=None,
+                    loser_pieces_lost=None,
+                    winner_color=winner_color,
                 )
                 rating_msg = (
                     f"\n\n📊 Рейтинг:\n"
@@ -147,7 +172,14 @@ async def check_game_timeouts(context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error sending timeout message: {e}")
 
         # Delete game
-        _repository.delete_game(chat_id, message_id)
+        if game_state.get("is_private_match"):
+            try:
+                _repository.delete_game(game_state["opponent_chat_id"], game_state["opponent_message_id"])
+                _repository.delete_game(game_state["challenger_chat_id"], game_state["challenger_message_id"])
+            except Exception:
+                _repository.delete_game(chat_id, message_id)
+        else:
+            _repository.delete_game(chat_id, message_id)
 
     # Check inline games
     inline_games = _repository.get_all_inline_games()
@@ -194,10 +226,21 @@ async def check_game_timeouts(context: ContextTypes.DEFAULT_TYPE):
         # Update ratings (only for rated games)
         rating_msg = ""
         mode = game_state.get("mode", "rated")
-        if _rating_system and mode == "rated" and game_state.get("move_count", 0) > 0:
+        move_count = int(game_state.get("move_count", 0) or 0)
+        if _rating_system and mode == "rated" and move_count > 0:
             try:
+                game_key = f"inline:{inline_message_id}"
+                winner_color = "yellow" if winner_id == game_state.get("yellow_player_id") else "blue"
                 winner_data, loser_data = await _rating_system.record_game(
-                    winner_id, winner_name, loser_id, loser_name
+                    winner_id,
+                    winner_name,
+                    loser_id,
+                    loser_name,
+                    game_key=game_key,
+                    move_count=move_count,
+                    winner_pieces_lost=None,
+                    loser_pieces_lost=None,
+                    winner_color=winner_color,
                 )
                 rating_msg = (
                     f"\n\n📊 Рейтинг:\n"

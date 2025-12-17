@@ -170,7 +170,8 @@ class TestRatingCalculations:
         loser_change = new_loser - loser_rating
         
         assert winner_change < 20, "Higher rated winner should gain less"
-        assert abs(loser_change) > abs(winner_change), "Loser should lose more"
+        # Rating changes are zero-sum: loser should lose exactly what winner gains (within rounding).
+        assert abs(loser_change) == abs(winner_change), "Should be zero-sum"
     
     def test_calculate_elo_change_upset(self):
         """Test calculate_elo_change for upset (lower rated wins)."""
@@ -236,6 +237,41 @@ class TestGameRecording:
         assert loser_data["losses"] == 1, "Loser should have 1 loss"
         assert winner_data["games_played"] == 1
         assert loser_data["games_played"] == 1
+
+    @pytest.mark.asyncio
+    async def test_record_game_idempotent_with_game_key(self, temp_ratings_db: RatingSystem):
+        """Calling record_game twice with the same game_key must not double-count wins/losses."""
+        game_key = "chat:1:1"
+
+        winner_data_1, loser_data_1 = await temp_ratings_db.record_game(
+            winner_id=51001,
+            winner_name="Winner",
+            loser_id=51002,
+            loser_name="Loser",
+            game_key=game_key,
+            move_count=12,
+        )
+
+        winner_data_2, loser_data_2 = await temp_ratings_db.record_game(
+            winner_id=51001,
+            winner_name="Winner",
+            loser_id=51002,
+            loser_name="Loser",
+            game_key=game_key,
+            move_count=12,
+        )
+
+        winner = await temp_ratings_db.get_player(51001, "Winner")
+        loser = await temp_ratings_db.get_player(51002, "Loser")
+
+        assert winner["wins"] == 1
+        assert loser["losses"] == 1
+        assert winner["games_played"] == 1
+        assert loser["games_played"] == 1
+
+        # Second call should return the same post-game rating (not apply changes again).
+        assert winner_data_2["rating"] == winner_data_1["rating"]
+        assert loser_data_2["rating"] == loser_data_1["rating"]
     
     @pytest.mark.asyncio
     async def test_record_game_streak_tracking(self, temp_ratings_db: RatingSystem):
@@ -544,6 +580,7 @@ class TestEdgeCases:
     async def test_very_high_ratings(self, temp_ratings_db: RatingSystem):
         """Test handling very high ratings."""
         # Manually set high rating
+        await temp_ratings_db.get_player(80001, "HighRated")
         import aiosqlite
         async with aiosqlite.connect(temp_ratings_db.db_path) as db:
             await db.execute(

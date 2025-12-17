@@ -201,6 +201,71 @@ def test_mid_capture_promotion():
     else:
         print("✓ Skipped (test scenario couldn't be set up) - manual verification needed")
 
+def test_multiple_capture_variants():
+    """Test that engine doesn't hang when there are 2 variants to capture 1 checker."""
+    print("\nTesting multiple capture variants (fix for hanging issue)...")
+    from engine import YELLOW_KING
+    
+    engine = CheckersEngine()
+    
+    # Set up a scenario where a king can capture the same enemy piece
+    # and land in multiple positions (2 variants to capture 1 checker)
+    # This is the scenario that was causing hangs
+    engine.board = [0] * 64
+    
+    # Place a YELLOW king that can capture a BLUE piece in multiple ways
+    # King at position 27 (D5)
+    # Enemy at position 18 (C6) - can be captured
+    # King can land at multiple positions beyond the enemy: 9 (B7), 0 (A8), etc.
+    engine.board[27] = YELLOW_KING  # D5 - king position
+    engine.board[18] = BLUE         # C6 - enemy to capture
+    engine.current_turn = YELLOW
+    
+    # This should not hang - it should return capture moves quickly
+    import time
+    start_time = time.time()
+    
+    try:
+        moves = engine.get_legal_moves(YELLOW)
+        elapsed = time.time() - start_time
+        
+        # Should complete quickly (less than 1 second)
+        assert elapsed < 1.0, f"Move generation took too long: {elapsed:.2f}s (possible hang)"
+        
+        # Should find capture moves
+        captures = [m for m in moves if m.captures]
+        assert len(captures) > 0, "Should find at least one capture move"
+        
+        # Check for multiple landing positions for the same capture
+        # (same from_pos, same captures, different to_pos)
+        capture_groups = {}
+        for move in captures:
+            if move.from_pos == 27:  # From the king position
+                key = (move.from_pos, tuple(sorted(move.captures)))
+                if key not in capture_groups:
+                    capture_groups[key] = []
+                capture_groups[key].append(move.to_pos)
+        
+        # Should have multiple landing positions for the same capture
+        multiple_variants = any(len(positions) > 1 for positions in capture_groups.values())
+        
+        if multiple_variants:
+            print(f"✓ Found multiple capture variants (same capture, different landing positions)")
+            for key, positions in capture_groups.items():
+                if len(positions) > 1:
+                    print(f"  Capture from {key[0]}: {len(positions)} landing positions")
+        else:
+            print("  Single capture variant found (test scenario may need adjustment)")
+        
+        print(f"✓ Move generation completed in {elapsed:.3f}s (no hang)")
+        print(f"  Total moves found: {len(moves)}, Captures: {len(captures)}")
+        
+    except Exception as e:
+        elapsed = time.time() - start_time
+        print(f"✗ Error after {elapsed:.2f}s: {e}")
+        raise
+
+
 def main():
     """Run all tests."""
     print("=" * 60)
@@ -215,6 +280,7 @@ def main():
         test_game_winner()
         test_move_application()
         test_mid_capture_promotion()
+        test_multiple_capture_variants()
         
         print("\n" + "=" * 60)
         print("✅ All core engine tests passed!")

@@ -181,9 +181,23 @@ class CheckersEngine:
             current_pos=pos,
             piece=piece,
             captured_so_far=[],
-            all_captures=captures
+            all_captures=captures,
+            visited_positions=set(),
+            depth=0
         )
-        return captures
+        
+        # Deduplicate capture sequences to avoid processing duplicate moves
+        # Two moves are duplicates if they have same from_pos, to_pos, and captures
+        seen = set()
+        unique_captures = []
+        for move in captures:
+            # Create a unique key based on from_pos, to_pos, and sorted captures
+            key = (move.from_pos, move.to_pos, tuple(sorted(move.captures)))
+            if key not in seen:
+                seen.add(key)
+                unique_captures.append(move)
+        
+        return unique_captures
     
     def _find_captures_recursive(
         self,
@@ -191,12 +205,58 @@ class CheckersEngine:
         current_pos: int,
         piece: int,
         captured_so_far: List[int],
-        all_captures: List[Move]
+        all_captures: List[Move],
+        visited_positions: Set[int],
+        depth: int = 0
     ):
         """
         Recursively find all possible capture sequences.
         Handles multi-captures and instant promotion during jumps.
+        
+        Args:
+            start_pos: Original starting position of the piece
+            current_pos: Current position during capture sequence
+            piece: Current piece (may have been promoted)
+            captured_so_far: List of positions captured so far
+            all_captures: List to accumulate all capture sequences
+            visited_positions: Set of positions already visited in this capture sequence (prevents cycles)
+            depth: Recursion depth (safety limit to prevent infinite loops)
         """
+        # Safety limit: prevent infinite recursion (max 12 captures = all enemy pieces)
+        MAX_RECURSION_DEPTH = 12
+        if depth > MAX_RECURSION_DEPTH:
+            # If we've exceeded depth, record what we have so far
+            if captured_so_far:
+                original_piece = self.board[start_pos]
+                was_promoted = self.is_king(piece) and not self.is_king(original_piece)
+                all_captures.append(Move(
+                    from_pos=start_pos,
+                    to_pos=current_pos,
+                    captures=captured_so_far.copy(),
+                    promotes=False,
+                    promoted_during_capture=was_promoted
+                ))
+            return
+        
+        # Prevent exploring the same position multiple times in the same capture sequence
+        # This avoids cycles and redundant exploration when multiple landing positions exist
+        if current_pos in visited_positions:
+            # Already visited this position in this sequence, record what we have
+            if captured_so_far:
+                original_piece = self.board[start_pos]
+                was_promoted = self.is_king(piece) and not self.is_king(original_piece)
+                all_captures.append(Move(
+                    from_pos=start_pos,
+                    to_pos=current_pos,
+                    captures=captured_so_far.copy(),
+                    promotes=False,
+                    promoted_during_capture=was_promoted
+                ))
+            return
+        
+        # Mark current position as visited
+        visited_positions.add(current_pos)
+        
         row, col = self.pos_to_coords(current_pos)
         found_capture = False
         current_color = self.get_piece_color(piece)
@@ -204,12 +264,14 @@ class CheckersEngine:
         if self.is_king(piece):
             # Kings can jump any distance
             found_capture = self._find_king_captures(
-                start_pos, current_pos, row, col, piece, current_color, captured_so_far, all_captures
+                start_pos, current_pos, row, col, piece, current_color, 
+                captured_so_far, all_captures, visited_positions, depth
             )
         else:
             # Men capture in all 4 diagonal directions (forward AND backward)
             found_capture = self._find_man_captures(
-                start_pos, current_pos, row, col, piece, current_color, captured_so_far, all_captures
+                start_pos, current_pos, row, col, piece, current_color, 
+                captured_so_far, all_captures, visited_positions, depth
             )
         
         # If no further captures, record this capture sequence
@@ -225,6 +287,10 @@ class CheckersEngine:
                 promotes=False,
                 promoted_during_capture=was_promoted
             ))
+        
+        # Remove current position from visited set when backtracking
+        # This allows exploring different paths that might revisit positions
+        visited_positions.remove(current_pos)
     
     def _find_man_captures(
         self,
@@ -235,7 +301,9 @@ class CheckersEngine:
         piece: int,
         current_color: int,
         captured_so_far: List[int],
-        all_captures: List[Move]
+        all_captures: List[Move],
+        visited_positions: Set[int],
+        depth: int
     ) -> bool:
         """Find captures for a man (can capture forward AND backward)."""
         found_capture = False
@@ -273,7 +341,8 @@ class CheckersEngine:
                 
                 # Continue searching from landing position
                 self._find_captures_recursive(
-                    start_pos, land_pos, new_piece, new_captured, all_captures
+                    start_pos, land_pos, new_piece, new_captured, all_captures,
+                    visited_positions, depth + 1
                 )
         
         return found_capture
@@ -287,7 +356,9 @@ class CheckersEngine:
         piece: int,
         current_color: int,
         captured_so_far: List[int],
-        all_captures: List[Move]
+        all_captures: List[Move],
+        visited_positions: Set[int],
+        depth: int
     ) -> bool:
         """Find captures for a king (flying captures)."""
         found_capture = False
@@ -318,6 +389,8 @@ class CheckersEngine:
                     break  # Already captured
                 
                 # Try to land beyond the enemy
+                # Optimize: only explore unique landing positions to avoid redundant recursion
+                landing_positions = []
                 for land_dist in range(dist + 1, 8):
                     land_row = row + dr * land_dist
                     land_col = col + dc * land_dist
@@ -329,12 +402,19 @@ class CheckersEngine:
                     if self.board[land_pos] != EMPTY:
                         break  # Blocked
                     
+                    # Only add if not already visited (prevents redundant exploration)
+                    if land_pos not in visited_positions:
+                        landing_positions.append(land_pos)
+                
+                # Process each unique landing position
+                for land_pos in landing_positions:
                     found_capture = True
                     new_captured = captured_so_far + [enemy_pos]
                     
                     # Continue searching from landing position
                     self._find_captures_recursive(
-                        start_pos, land_pos, piece, new_captured, all_captures
+                        start_pos, land_pos, piece, new_captured, all_captures,
+                        visited_positions, depth + 1
                     )
                 
                 break  # Stop after first piece in this direction
