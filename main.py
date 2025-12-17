@@ -280,7 +280,14 @@ async def post_init(application: Application):
     # Get achievement system from bot_data (created in main)
     achievement_system = application.bot_data.get("achievement_system")
     if achievement_system:
-        logger.info("Achievement system initialized (no async init needed)")
+        if hasattr(achievement_system, "initialize"):
+            try:
+                await achievement_system.initialize()
+                logger.info("Achievement system initialized")
+            except Exception as e:
+                logger.error(f"Failed to initialize achievement system: {e}")
+        else:
+            logger.info("Achievement system initialized (no initialize() method)")
 
     # Initialize game data repository
     logger.info(f"Initializing game data repository: {GAMEDATA_DB_PATH}")
@@ -461,6 +468,15 @@ def main():
         )
     )
     application.add_handler(
+        CallbackQueryHandler(handlers.abort_forfeit_callback, pattern="^abort_forfeit_")
+    )
+    application.add_handler(
+        CallbackQueryHandler(handlers.confirm_restart_callback, pattern="^confirm_restart_token_")
+    )
+    application.add_handler(
+        CallbackQueryHandler(handlers.restart_abort_callback, pattern="^restart_abort_token_")
+    )
+    application.add_handler(
         CallbackQueryHandler(handlers.cancel_abort_callback, pattern="^cancel_abort$")
     )
     application.add_handler(
@@ -471,6 +487,9 @@ def main():
     )
     application.add_handler(
         CallbackQueryHandler(handlers.back_callback, pattern="^back$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(handlers.review_callback, pattern="^review_")
     )
     application.add_handler(
         CallbackQueryHandler(handlers.forfeit_callback, pattern="^forfeit$")

@@ -4,7 +4,7 @@ Redis-based state management for Checkers games.
 
 import json
 import logging
-from typing import Optional
+from typing import Optional, Any, Dict
 from datetime import datetime
 import redis
 from redis.exceptions import ResponseError
@@ -153,6 +153,18 @@ class GameRepository:
         for chat_id, message_id, game_state in self.get_all_games():
             if game_state.get("blue_player_id") == user_id or game_state.get("yellow_player_id") == user_id:
                 return (chat_id, message_id, game_state)
+        return None
+
+    def get_user_inline_game(self, user_id: int) -> Optional[tuple]:
+        """
+        Find an active inline game where the user is a player.
+
+        Returns:
+            Tuple of (inline_message_id, game_state) or None if no active inline game
+        """
+        for inline_message_id, game_state in self.get_all_inline_games():
+            if game_state.get("blue_player_id") == user_id or game_state.get("yellow_player_id") == user_id:
+                return (inline_message_id, game_state)
         return None
 
     # ============ User Registry ============
@@ -341,6 +353,45 @@ class GameRepository:
             logger.error(f"Error resetting rate limit: {e}")
             return False
 
+    # ============ Confirmation Tokens ============
+
+    @staticmethod
+    def _make_confirm_key(token: str) -> str:
+        """Generate Redis key for a short-lived confirmation token."""
+        return f"checkers:confirm:{token}"
+
+    def save_confirm_token(self, token: str, payload: Dict[str, Any], ttl_seconds: int = 300) -> bool:
+        """Save a short-lived confirmation payload."""
+        try:
+            key = self._make_confirm_key(token)
+            self.redis_client.setex(key, int(ttl_seconds), json.dumps(payload))
+            return True
+        except Exception as e:
+            logger.error(f"Error saving confirm token: {e}")
+            return False
+
+    def get_confirm_token(self, token: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a confirmation payload by token."""
+        try:
+            key = self._make_confirm_key(token)
+            value = self.redis_client.get(key)
+            if value:
+                return json.loads(value)
+            return None
+        except Exception as e:
+            logger.error(f"Error getting confirm token: {e}")
+            return None
+
+    def delete_confirm_token(self, token: str) -> bool:
+        """Delete a confirmation token."""
+        try:
+            key = self._make_confirm_key(token)
+            self.redis_client.delete(key)
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting confirm token: {e}")
+            return False
+
     # ============ Inline Game Storage ============
     
     @staticmethod
@@ -435,9 +486,12 @@ class GameRepository:
 
         existing = self.redis_client.hgetall(ticket_key)
         if existing and existing.get("status") == "queued":
-            return existing
+            # Normalize return shape for callers/tests.
+            return {**existing, "user_id": user_id}
 
-        ticket = {
+        # Store strings in Redis, but return typed values to callers.
+        ticket_store = {
+            "user_id": str(user_id),
             "mode": mode,
             "chat_id": str(chat_id),
             "created_at": now,
@@ -446,11 +500,11 @@ class GameRepository:
         }
 
         pipe = self.redis_client.pipeline()
-        pipe.hset(ticket_key, mapping=ticket)
+        pipe.hset(ticket_key, mapping=ticket_store)
         pipe.expire(ticket_key, 900)
         pipe.zadd(queue_key, {user_id: rating})
         pipe.execute()
-        return ticket
+        return {**ticket_store, "user_id": user_id, "chat_id": chat_id, "rating": rating}
 
     def mm_cancel(self, user_id: int) -> bool:
         """Cancel matchmaking for a user if queued."""
@@ -604,8 +658,8 @@ class GameRepository:
 
         return {
             "users": [
-                {"user_id": uid_a, **tickets.get(uid_a, {})},
-                {"user_id": uid_b, **tickets.get(uid_b, {})},
+                {**tickets.get(uid_a, {}), "user_id": uid_a},
+                {**tickets.get(uid_b, {}), "user_id": uid_b},
             ],
             "match_id": match_key,
             "mode": mode,
@@ -623,6 +677,7 @@ class GameRepository:
         """Create an invite code entry."""
         key = f"mm:invite:{code}"
         data = {
+            "code": code,
             "creator_user_id": str(user_id),
             "creator_chat_id": str(chat_id),
             "mode": mode,

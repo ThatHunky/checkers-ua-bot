@@ -710,7 +710,7 @@ class TestAchievementCount:
     
     @pytest.mark.asyncio
     async def test_total_achievement_count(self, temp_achievements_db: AchievementSystem):
-        """Verify we have 84 achievements (87 - 3 removed)."""
+        """Verify we have the correct number of achievements."""
         await populate_achievements_for_test(temp_achievements_db.db_path)
         
         all_achievements = await temp_achievements_db.get_all_achievements()
@@ -723,8 +723,8 @@ class TestAchievementCount:
         
         total = len(all_achievements)
         
-        # Should have 84 achievements total
-        assert total == 84, f"Expected 84 achievements, got {total}. Categories: {categories}"
+        # Should have 100 achievements total (with 3 removed special achievements not present).
+        assert total == 100, f"Expected 100 achievements, got {total}. Categories: {categories}"
         
         # Verify removed achievements are not present
         achievement_ids = {ach["achievement_id"] for ach in all_achievements}

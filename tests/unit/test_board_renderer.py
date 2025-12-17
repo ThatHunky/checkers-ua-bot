@@ -161,6 +161,16 @@ class TestKeyboardCreation:
             for row in keyboard.inline_keyboard
         )
         assert has_control, "Should have control buttons"
+
+    def test_create_keyboard_includes_review_button_after_first_move(self, checkers_engine: CheckersEngine):
+        """When at least one move was made, keyboard should include review button."""
+        keyboard = BoardRenderer.create_move_keyboard(checkers_engine, move_count=1)
+
+        has_review = any(
+            any(str(btn.callback_data).startswith("review_") for btn in row)
+            for row in keyboard.inline_keyboard
+        )
+        assert has_review, "Should have review button when move_count > 0"
     
     def test_create_keyboard_move_count_zero(self, checkers_engine: CheckersEngine):
         """Test keyboard with move_count=0 shows cancel button."""

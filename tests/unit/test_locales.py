@@ -247,6 +247,35 @@ class TestTemplateFormatting:
 
 
 @pytest.mark.unit
+class TestModeHelpers:
+    """Test mode normalization/labels used across invitations and game messages."""
+
+    def test_normalize_mode_ranked_to_rated(self):
+        assert locales.normalize_mode("ranked") == "rated"
+
+    def test_mode_label_mapping(self):
+        assert locales.mode_label("rated") == "Рейтинг"
+        assert locales.mode_label("ranked") == "Рейтинг"  # backward-compatible alias
+        assert locales.mode_label("casual") == "Без рейтингу"
+        assert locales.mode_label("practice") == "Тренування"
+
+    def test_mode_note_mapping(self):
+        assert "змінюється" in locales.mode_note("rated")
+        assert "не змінюється" in locales.mode_note("casual")
+        assert "не змінюється" in locales.mode_note("practice")
+
+    def test_invite_created_with_mode_formatting(self):
+        code = "ABC123"
+        formatted = locales.INVITE_CREATED_WITH_MODE.format(
+            code=code,
+            mode_label=locales.mode_label("rated"),
+            mode_note=locales.mode_note("rated"),
+        )
+        assert code in formatted
+        assert "Режим" in formatted
+
+
+@pytest.mark.unit
 class TestEmojiPresence:
     """Test that emoji constants contain emojis."""
     

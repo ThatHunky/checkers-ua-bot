@@ -80,7 +80,6 @@ INVITE_CANCEL = "❌ Скасувати запрошення"
 # Inline Challenge
 INLINE_CHALLENGE_TITLE = "🎮 Створити виклик на гру"
 INLINE_CHALLENGE_DESC = "Створіть виклик, до якого зможе приєднатися будь-хто"
-INLINE_CHALLENGE_MSG = "🎮 <b>Виклик на гру в Шашки!</b>\n\n{name} хоче зіграти!\nНатисніть кнопку нижче, щоб приєднатися."
 INLINE_CHALLENGE_JOIN = "⚔️ Приєднатися"
 INLINE_CHALLENGE_EXPIRED = "❌ Виклик закінчився або вже використано."
 INLINE_CHALLENGE_SELF_JOIN = "❌ Ви не можете приєднатися до власного виклику."
@@ -93,8 +92,64 @@ INLINE_CHALLENGE_RANKED_TITLE = "⚡ Виклик (Рейтинг)"
 INLINE_CHALLENGE_RANKED_DESC = "Створити рейтинговий виклик"
 INLINE_CHALLENGE_PRACTICE_TITLE = "📚 Виклик (Тренування)"
 INLINE_CHALLENGE_PRACTICE_DESC = "Створити виклик для тренування"
-INLINE_CHALLENGE_MSG_RANKED = "⚡ <b>Рейтинговий виклик на гру в Шашки!</b>\n\n{name} хоче зіграти рейтингову гру!\nНатисніть кнопку нижче, щоб приєднатися."
-INLINE_CHALLENGE_MSG_PRACTICE = "📚 <b>Виклик на тренувальну гру в Шашки!</b>\n\n{name} хоче потренуватися!\nНатисніть кнопку нижче, щоб приєднатися."
+INLINE_CHALLENGE_MSG = (
+    "🎲 <b>Виклик на гру в Шашки (Без рейтингу)!</b>\n\n"
+    "{name} хоче зіграти!\n"
+    "<i>Рейтинг не змінюється в цьому режимі.</i>\n\n"
+    "Натисніть кнопку нижче, щоб приєднатися."
+)
+INLINE_CHALLENGE_MSG_RANKED = (
+    "⚡ <b>Рейтинговий виклик на гру в Шашки!</b>\n\n"
+    "{name} хоче зіграти рейтингову гру!\n"
+    "<i>Рейтинг змінюється після завершення гри.</i>\n\n"
+    "Натисніть кнопку нижче, щоб приєднатися."
+)
+INLINE_CHALLENGE_MSG_PRACTICE = (
+    "📚 <b>Виклик на тренувальну гру в Шашки!</b>\n\n"
+    "{name} хоче потренуватися!\n"
+    "<i>Рейтинг не змінюється в цьому режимі.</i>\n\n"
+    "Натисніть кнопку нижче, щоб приєднатися."
+)
+
+# Invites
+INVITE_CREATED_WITH_MODE = (
+    "📨 Запрошення створено: <code>{code}</code>\n"
+    "Режим: <b>{mode_label}</b>\n"
+    "<i>{mode_note}</i>"
+)
+
+
+def normalize_mode(mode: str) -> str:
+    """
+    Normalize game mode values to the canonical internal names.
+
+    We historically used both "ranked" and "rated". Canonical is "rated".
+    """
+    m = (mode or "").strip().lower()
+    if m == "ranked":
+        return "rated"
+    if m in {"rated", "casual", "practice"}:
+        return m
+    # Backward-compatible default
+    return "casual"
+
+
+def mode_label(mode: str) -> str:
+    """User-facing label for a mode (Ukrainian)."""
+    m = normalize_mode(mode)
+    if m == "rated":
+        return "Рейтинг"
+    if m == "practice":
+        return "Тренування"
+    return "Без рейтингу"
+
+
+def mode_note(mode: str) -> str:
+    """Short note about rating changes for a mode (Ukrainian)."""
+    m = normalize_mode(mode)
+    if m == "rated":
+        return "Рейтинг змінюється після завершення гри."
+    return "Рейтинг не змінюється в цьому режимі."
 PROFILE_TEMPLATE = (
     "👤 {name}\n"
     "⭐ Рейтинг: {rating}\n"

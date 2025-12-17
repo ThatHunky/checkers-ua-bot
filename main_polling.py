@@ -131,6 +131,12 @@ def main():
     application.add_handler(CommandHandler("addlegend", handlers.add_legend_command))  # Hidden arcade mode command
     
     # Register callback handlers
+    application.add_handler(CallbackQueryHandler(handlers.confirm_cancel_callback, pattern="^confirm_cancel_"))
+    application.add_handler(CallbackQueryHandler(handlers.confirm_forfeit_callback, pattern="^confirm_forfeit_"))
+    application.add_handler(CallbackQueryHandler(handlers.abort_forfeit_callback, pattern="^abort_forfeit_"))
+    application.add_handler(CallbackQueryHandler(handlers.confirm_restart_callback, pattern="^confirm_restart_token_"))
+    application.add_handler(CallbackQueryHandler(handlers.restart_abort_callback, pattern="^restart_abort_token_"))
+    application.add_handler(CallbackQueryHandler(handlers.cancel_abort_callback, pattern="^cancel_abort$"))
     application.add_handler(CallbackQueryHandler(handlers.join_callback, pattern="^join$"))
     application.add_handler(CallbackQueryHandler(handlers.cancel_invite_callback, pattern="^cancel_invite$"))
     application.add_handler(CallbackQueryHandler(handlers.select_callback, pattern="^select_"))

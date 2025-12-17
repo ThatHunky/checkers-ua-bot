@@ -317,6 +317,348 @@ class RatingSystem:
         new_loser_rating = loser_rating + loser_change
         
         return new_winner_rating, new_loser_rating
+
+    @staticmethod
+    def calculate_elo_draw_change(
+        player1_rating: int,
+        player2_rating: int,
+        player1_games: int = 0,
+        player2_games: int = 0,
+        k_factor: Optional[int] = None,
+    ) -> tuple[int, int]:
+        """
+        Calculate ELO rating changes for a draw (0.5 / 0.5) using dynamic K-factor.
+
+        Formula: R_new = R_old + K × (Actual - Expected)
+        For draw: Actual = 0.5 for both players.
+        """
+        if k_factor is None:
+            p1_k = get_k_factor(player1_games)
+            p2_k = get_k_factor(player2_games)
+            avg_k = (p1_k + p2_k) / 2
+        else:
+            avg_k = k_factor
+
+        expected_p1 = 1 / (1 + 10 ** ((player2_rating - player1_rating) / 400))
+        # Ensure zero-sum by deriving player2 change from player1 change.
+        p1_change = round(avg_k * (0.5 - expected_p1))
+        p2_change = -p1_change
+
+        return player1_rating + p1_change, player2_rating + p2_change
+
+    async def record_draw(
+        self,
+        player1_id: int,
+        player1_name: str,
+        player2_id: int,
+        player2_name: str,
+        *,
+        game_key: Optional[str] = None,
+        move_count: int = 0,
+        game_duration: int = 0,
+    ) -> Tuple[dict, dict]:
+        """
+        Record a draw result and update ELO ratings + draw statistics.
+
+        Idempotent when game_key is provided (same semantics as record_game).
+        """
+        from datetime import date
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            try:
+                await db.execute("BEGIN IMMEDIATE")
+
+                if game_key:
+                    async with db.execute(
+                        "SELECT player1_id, player2_id, winner_id, "
+                        "player1_rating_before, player1_rating_after, "
+                        "player2_rating_before, player2_rating_after "
+                        "FROM match_history WHERE game_key = ?",
+                        (game_key,),
+                    ) as cursor:
+                        existing = await cursor.fetchone()
+
+                    if existing:
+                        p1_row = await self._get_player_in_tx(db, player1_id, player1_name)
+                        p2_row = await self._get_player_in_tx(db, player2_id, player2_name)
+
+                        # Changes relative to requested IDs, regardless of stored ordering.
+                        if int(existing["player1_id"]) == int(player1_id):
+                            p1_change = int(existing["player1_rating_after"] - existing["player1_rating_before"])
+                        elif int(existing["player2_id"]) == int(player1_id):
+                            p1_change = int(existing["player2_rating_after"] - existing["player2_rating_before"])
+                        else:
+                            p1_change = 0
+
+                        if int(existing["player1_id"]) == int(player2_id):
+                            p2_change = int(existing["player1_rating_after"] - existing["player1_rating_before"])
+                        elif int(existing["player2_id"]) == int(player2_id):
+                            p2_change = int(existing["player2_rating_after"] - existing["player2_rating_before"])
+                        else:
+                            p2_change = 0
+
+                        await db.commit()
+                        return (
+                            {**p1_row, "rating_change": p1_change, "rank_changed": False, "new_rank": None},
+                            {**p2_row, "rating_change": p2_change, "rank_changed": False, "new_rank": None},
+                        )
+
+                p1 = await self._get_player_in_tx(db, player1_id, player1_name)
+                p2 = await self._get_player_in_tx(db, player2_id, player2_name)
+
+                p1_games = int(p1.get("games_played", 0) or 0)
+                p2_games = int(p2.get("games_played", 0) or 0)
+
+                new_p1_rating, new_p2_rating = self.calculate_elo_draw_change(
+                    int(p1["rating"]),
+                    int(p2["rating"]),
+                    p1_games,
+                    p2_games,
+                )
+
+                p1_change = int(new_p1_rating - int(p1["rating"]))
+                p2_change = int(new_p2_rating - int(p2["rating"]))
+
+                today = date.today()
+
+                def parse_date(d):
+                    if d is None:
+                        return None
+                    if isinstance(d, str):
+                        try:
+                            return date.fromisoformat(d)
+                        except (ValueError, TypeError):
+                            return None
+                    return d
+
+                def compute_counters(
+                    player_row: dict, rating_change: int
+                ) -> tuple[int, int, int, int, int, int, Optional[date], Optional[date]]:
+                    last_played = parse_date(player_row.get("last_played_date"))
+                    last_week_reset = parse_date(player_row.get("last_week_reset"))
+                    last_month_reset = parse_date(player_row.get("last_month_reset"))
+
+                    # Weekly
+                    if last_week_reset is None or (today - last_week_reset).days >= 7:
+                        games_week = 1
+                        gain_week = rating_change
+                        last_week_reset = today
+                    else:
+                        games_week = int(player_row.get("games_this_week", 0) or 0) + 1
+                        gain_week = int(player_row.get("rating_gain_this_week", 0) or 0) + rating_change
+
+                    # Monthly
+                    if last_month_reset is None or (today.year != last_month_reset.year or today.month != last_month_reset.month):
+                        games_month = 1
+                        gain_month = rating_change
+                        last_month_reset = today
+                    else:
+                        games_month = int(player_row.get("games_this_month", 0) or 0) + 1
+                        gain_month = int(player_row.get("rating_gain_this_month", 0) or 0) + rating_change
+
+                    # Daily streak tracking
+                    if last_played is None:
+                        consecutive_days = 1
+                        games_today = 1
+                    else:
+                        delta_days = (today - last_played).days
+                        if delta_days == 0:
+                            consecutive_days = int(player_row.get("consecutive_days", 0) or 0) or 1
+                            games_today = int(player_row.get("games_today", 0) or 0) + 1
+                        elif delta_days == 1:
+                            consecutive_days = int(player_row.get("consecutive_days", 0) or 0) + 1
+                            games_today = 1
+                        else:
+                            consecutive_days = 1
+                            games_today = 1
+
+                    return (
+                        games_week,
+                        games_month,
+                        gain_week,
+                        gain_month,
+                        consecutive_days,
+                        games_today,
+                        last_week_reset,
+                        last_month_reset,
+                    )
+
+                (
+                    p1_games_week,
+                    p1_games_month,
+                    p1_gain_week,
+                    p1_gain_month,
+                    p1_consec,
+                    p1_games_today,
+                    p1_wk_reset,
+                    p1_mo_reset,
+                ) = compute_counters(p1, p1_change)
+                (
+                    p2_games_week,
+                    p2_games_month,
+                    p2_gain_week,
+                    p2_gain_month,
+                    p2_consec,
+                    p2_games_today,
+                    p2_wk_reset,
+                    p2_mo_reset,
+                ) = compute_counters(p2, p2_change)
+
+                p1_total_gained = int(p1.get("total_rating_gained", 0) or 0) + max(0, p1_change)
+                p1_total_lost = int(p1.get("total_rating_lost", 0) or 0) + max(0, -p1_change)
+                p2_total_gained = int(p2.get("total_rating_gained", 0) or 0) + max(0, p2_change)
+                p2_total_lost = int(p2.get("total_rating_lost", 0) or 0) + max(0, -p2_change)
+
+                # Longest game tracking (keep semantics: maximum move_count observed)
+                p1_longest = int(p1.get("longest_game") or 0)
+                p2_longest = int(p2.get("longest_game") or 0)
+                if move_count and int(move_count) > p1_longest:
+                    p1_longest = int(move_count)
+                if move_count and int(move_count) > p2_longest:
+                    p2_longest = int(move_count)
+
+                # Best rating tracking
+                p1_best_rating = max(int(p1.get("best_rating", int(new_p1_rating)) or int(new_p1_rating)), int(new_p1_rating))
+                p2_best_rating = max(int(p2.get("best_rating", int(new_p2_rating)) or int(new_p2_rating)), int(new_p2_rating))
+
+                await db.execute(
+                    """
+                    UPDATE players
+                    SET rating = ?,
+                        games_played = games_played + 1,
+                        draws = draws + 1,
+                        current_streak = 0,
+                        best_rating = ?,
+                        total_rating_gained = ?,
+                        total_rating_lost = ?,
+                        longest_game = ?,
+                        games_this_week = ?,
+                        games_this_month = ?,
+                        last_game_date = ?,
+                        last_played_date = ?,
+                        consecutive_days = ?,
+                        games_today = ?,
+                        rating_gain_this_week = ?,
+                        rating_gain_this_month = ?,
+                        perfect_streak = 0,
+                        last_week_reset = ?,
+                        last_month_reset = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE user_id = ?
+                    """,
+                    (
+                        int(new_p1_rating),
+                        p1_best_rating,
+                        p1_total_gained,
+                        p1_total_lost,
+                        p1_longest,
+                        p1_games_week,
+                        p1_games_month,
+                        today.isoformat(),
+                        today.isoformat(),
+                        p1_consec,
+                        p1_games_today,
+                        p1_gain_week,
+                        p1_gain_month,
+                        p1_wk_reset.isoformat() if p1_wk_reset else None,
+                        p1_mo_reset.isoformat() if p1_mo_reset else None,
+                        player1_id,
+                    ),
+                )
+
+                await db.execute(
+                    """
+                    UPDATE players
+                    SET rating = ?,
+                        games_played = games_played + 1,
+                        draws = draws + 1,
+                        current_streak = 0,
+                        best_rating = ?,
+                        total_rating_gained = ?,
+                        total_rating_lost = ?,
+                        longest_game = ?,
+                        games_this_week = ?,
+                        games_this_month = ?,
+                        last_game_date = ?,
+                        last_played_date = ?,
+                        consecutive_days = ?,
+                        games_today = ?,
+                        rating_gain_this_week = ?,
+                        rating_gain_this_month = ?,
+                        perfect_streak = 0,
+                        last_week_reset = ?,
+                        last_month_reset = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE user_id = ?
+                    """,
+                    (
+                        int(new_p2_rating),
+                        p2_best_rating,
+                        p2_total_gained,
+                        p2_total_lost,
+                        p2_longest,
+                        p2_games_week,
+                        p2_games_month,
+                        today.isoformat(),
+                        today.isoformat(),
+                        p2_consec,
+                        p2_games_today,
+                        p2_gain_week,
+                        p2_gain_month,
+                        p2_wk_reset.isoformat() if p2_wk_reset else None,
+                        p2_mo_reset.isoformat() if p2_mo_reset else None,
+                        player2_id,
+                    ),
+                )
+
+                await db.execute(
+                    """
+                    INSERT INTO match_history
+                        (player1_id, player2_id, winner_id,
+                         player1_rating_before, player1_rating_after,
+                         player2_rating_before, player2_rating_after,
+                         move_count, game_duration, game_key)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        player1_id,
+                        player2_id,
+                        None,
+                        int(p1["rating"]),
+                        int(new_p1_rating),
+                        int(p2["rating"]),
+                        int(new_p2_rating),
+                        int(move_count or 0),
+                        int(game_duration or 0),
+                        game_key,
+                    ),
+                )
+
+                await db.commit()
+            except Exception:
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
+                raise
+
+        logger.info(
+            f"Draw recorded: {player1_name} ({p1['rating']} → {new_p1_rating}, "
+            f"{'+' if p1_change >= 0 else ''}{p1_change}) draws {player2_name} "
+            f"({p2['rating']} → {new_p2_rating}, {'+' if p2_change >= 0 else ''}{p2_change})"
+        )
+
+        # Return fresh rows (not strictly required, but consistent with record_game).
+        p1_out = await self.get_player(player1_id, player1_name)
+        p2_out = await self.get_player(player2_id, player2_name)
+        p1_out["rating_change"] = p1_change
+        p2_out["rating_change"] = p2_change
+        p1_out["rank_changed"] = False
+        p1_out["new_rank"] = None
+        p2_out["rank_changed"] = False
+        p2_out["new_rank"] = None
+        return p1_out, p2_out
     
     async def record_game(
         self,

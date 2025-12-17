@@ -149,6 +149,14 @@ class BoardRenderer:
         if selected_pos is not None and not pending_capture:
             control_buttons.append(InlineKeyboardButton("« Скасувати", callback_data="back"))
             
+        # Review previous moves (only after at least one move exists)
+        # This switches the message into a non-destructive "review" mode via GameHandlers.review_callback.
+        if int(move_count or 0) > 0:
+            # Most recent move index is move_count - 1 (move_history is appended once per applied move).
+            control_buttons.append(
+                InlineKeyboardButton("⏪ Попередній хід", callback_data=f"review_{int(move_count) - 1}")
+            )
+
         # Specific button based on game stage
         if move_count == 0:
             control_buttons.append(InlineKeyboardButton(locales.BTN_CANCEL, callback_data="forfeit"))

@@ -113,6 +113,23 @@ class TestPositionUtilities:
 
 
 @pytest.mark.unit
+class TestPositionKey:
+    """Test deterministic position key helper used for threefold repetition."""
+
+    def test_position_key_changes_with_turn(self, checkers_engine: CheckersEngine):
+        key_yellow = CheckersEngine.position_key(checkers_engine.board, YELLOW)
+        key_blue = CheckersEngine.position_key(checkers_engine.board, BLUE)
+        assert key_yellow != key_blue
+
+    def test_position_key_changes_with_board(self, checkers_engine: CheckersEngine):
+        key1 = CheckersEngine.position_key(checkers_engine.board, checkers_engine.current_turn)
+        mutated = checkers_engine.board.copy()
+        mutated[0] = BLUE if mutated[0] == EMPTY else EMPTY
+        key2 = CheckersEngine.position_key(mutated, checkers_engine.current_turn)
+        assert key1 != key2
+
+
+@pytest.mark.unit
 class TestPieceIdentification:
     """Test piece color and type identification."""
     

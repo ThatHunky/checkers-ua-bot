@@ -114,7 +114,7 @@ def test_inline_challenge_modes():
     """Test that all challenge modes work correctly."""
     repo = setup_repo()
     
-    for mode in ["casual", "ranked", "practice"]:
+    for mode in ["casual", "rated", "practice"]:
         inline_message_id = f"mode_test_{mode}"
         challenge_data = {
             "creator_id": 1000,

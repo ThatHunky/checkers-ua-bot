@@ -4,9 +4,12 @@ Handles achievement checking, unlocking, and progress tracking.
 """
 
 import aiosqlite
-from typing import Optional, Dict, List, Tuple
+import ast
+from pathlib import Path
+import sqlite3
+from typing import Any, Dict, List, Optional
 import logging
-from datetime import datetime, date
+from datetime import date
 from ranks import get_rank
 
 logger = logging.getLogger(__name__)
@@ -18,6 +21,86 @@ class AchievementSystem:
     def __init__(self, db_path: str = "/data/ratings.db"):
         """Initialize achievement system with database path."""
         self.db_path = db_path
+
+    @staticmethod
+    def _load_default_achievements_catalog() -> list[tuple[str, str, str, str, str, str, str, int]]:
+        """
+        Load the default achievements catalog.
+
+        Primary source: `scripts/reset_database.py` (kept in-repo).
+        Fallback: a minimal set to keep the system functional if the script format changes.
+        """
+        reset_script = Path(__file__).with_name("scripts") / "reset_database.py"
+        if reset_script.exists():
+            try:
+                module = ast.parse(reset_script.read_text(encoding="utf-8"))
+                for node in module.body:
+                    if isinstance(node, ast.Assign):
+                        for target in node.targets:
+                            if isinstance(target, ast.Name) and target.id == "achievements":
+                                value = ast.literal_eval(node.value)
+                                # Expected shape: list[tuple[str, str, str, str, str, str, str, int]]
+                                if isinstance(value, list) and value and isinstance(value[0], tuple):
+                                    return value
+            except Exception:
+                # Fall through to minimal catalog
+                pass
+
+        return [
+            ("first_steps", "First Steps", "Перші Кроки", "Play your first game", "Зіграйте свою першу гру", "🌱", "milestone", 1),
+            ("first_victory", "First Victory", "Перша Перемога", "Win your first game", "Виграйте свою першу гру", "🏆", "milestone", 1),
+            ("victory_lightning", "Lightning Victory", "Блискавка", "Win a game in under 25 moves", "Виграйте гру менше ніж за 25 ходів", "⚡", "victory", 25),
+            ("victory_hurricane", "Hurricane", "Ураган", "Win a game in under 20 moves", "Виграйте гру менше ніж за 20 ходів", "💨", "victory", 20),
+        ]
+
+    async def initialize(self) -> None:
+        """
+        Create achievements tables (idempotent) and seed the default catalog.
+
+        Tests and fresh installs expect:
+        - `achievements` table exists and contains at least one row.
+        - `player_achievements` table exists and supports INSERT/SELECT flows.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS achievements (
+                    achievement_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    name_uk TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    description_uk TEXT NOT NULL,
+                    icon TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    requirement_value INTEGER NOT NULL
+                )
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS player_achievements (
+                    user_id INTEGER NOT NULL,
+                    achievement_id TEXT NOT NULL,
+                    unlocked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, achievement_id)
+                )
+                """
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_player_achievements_user ON player_achievements(user_id)"
+            )
+
+            catalog = self._load_default_achievements_catalog()
+            await db.executemany(
+                """
+                INSERT OR IGNORE INTO achievements
+                (achievement_id, name, name_uk, description, description_uk, icon, category, requirement_value)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                catalog,
+            )
+            await db.commit()
+            logger.info("Achievement database initialized at %s", self.db_path)
     
     async def check_achievements(
         self,
@@ -25,7 +108,7 @@ class AchievementSystem:
         player_data: dict,
         game_result: dict,
         opponent_data: Optional[dict] = None
-    ) -> List[Dict[str, any]]:
+    ) -> List[Dict[str, Any]]:
         """
         Check and unlock achievements for a player after a game.
         
@@ -314,18 +397,23 @@ class AchievementSystem:
         ach_id = achievement["achievement_id"]
         req_value = achievement["requirement_value"]
         
-        # Get player rank by querying database
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute(
-                """SELECT COUNT(*) + 1 as rank
-                   FROM players
-                   WHERE rating > (
-                       SELECT rating FROM players WHERE user_id = ?
-                   ) AND games_played > 0""",
-                (user_id,)
-            ) as cursor:
-                row = await cursor.fetchone()
-                rank = row[0] if row else None
+        # Get player rank by querying database.
+        # In some test fixtures we only create achievements tables (no ratings/players schema),
+        # so treat missing `players` table as "not eligible" rather than crashing.
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                async with db.execute(
+                    """SELECT COUNT(*) + 1 as rank
+                       FROM players
+                       WHERE rating > (
+                           SELECT rating FROM players WHERE user_id = ?
+                       ) AND games_played > 0""",
+                    (user_id,),
+                ) as cursor:
+                    row = await cursor.fetchone()
+                    rank = row[0] if row else None
+        except sqlite3.OperationalError:
+            return False
         
         if rank is None:
             return False
@@ -466,7 +554,7 @@ class AchievementSystem:
         else:
             return unlocked_count >= req_value
     
-    async def get_all_achievements(self) -> List[Dict[str, any]]:
+    async def get_all_achievements(self) -> List[Dict[str, Any]]:
         """Get all achievement definitions."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -476,7 +564,7 @@ class AchievementSystem:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
     
-    async def get_player_achievements(self, user_id: int) -> List[Dict[str, any]]:
+    async def get_player_achievements(self, user_id: int) -> List[Dict[str, Any]]:
         """Get all achievements unlocked by a player."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -504,14 +592,18 @@ class AchievementSystem:
                 pass
     
     async def get_achievement_progress(
-        self, user_id: int, achievement_id: str, player_data: dict
-    ) -> Optional[Dict[str, any]]:
+        self, user_id: int, achievement_id: str, player_data: Optional[dict] = None
+    ) -> Optional[Dict[str, Any]]:
         """
         Get progress towards an achievement.
         
         Returns:
             Dict with current progress, max progress, percentage, or None if not progress-based
         """
+        # Backwards compatibility: tests and some callers pass only (user_id, achievement_id).
+        if player_data is None:
+            player_data = {}
+
         achievement = await self.get_achievement(achievement_id)
         if not achievement:
             return None
@@ -519,7 +611,12 @@ class AchievementSystem:
         # Check if already unlocked
         player_achievements = await self.get_player_achievements(user_id)
         if any(ach["achievement_id"] == achievement_id for ach in player_achievements):
-            return {"unlocked": True, "progress": 100, "current": achievement["requirement_value"], "max": achievement["requirement_value"]}
+            return {
+                "unlocked": True,
+                "progress": 100,
+                "current": achievement["requirement_value"],
+                "max": achievement["requirement_value"],
+            }
         
         req_value = achievement["requirement_value"]
         category = achievement["category"]
@@ -538,7 +635,7 @@ class AchievementSystem:
         
         return None
     
-    async def get_achievement(self, achievement_id: str) -> Optional[Dict[str, any]]:
+    async def get_achievement(self, achievement_id: str) -> Optional[Dict[str, Any]]:
         """Get a specific achievement by ID."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row

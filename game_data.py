@@ -336,6 +336,27 @@ class GameDataRepository:
                 conn.rollback()
                 conn.close()
                 return False
+
+            # Maintain per-user index for replay/history UIs.
+            # Some legacy DBs may not have user_games; do not fail the save in that case.
+            try:
+                completed_at = game_data["completed_at"]
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO user_games (user_id, game_id, completed_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (game_data["blue_player_id"], game_data["game_id"], completed_at),
+                )
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO user_games (user_id, game_id, completed_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (game_data["yellow_player_id"], game_data["game_id"], completed_at),
+                )
+            except sqlite3.OperationalError:
+                pass
             
             # Commit transaction
             conn.commit()
@@ -544,6 +565,11 @@ class GameDataRepository:
                 exc_info=True
             )
             return []
+
+    # Backwards-compatible alias used by some tests/callers.
+    def get_user_games(self, user_id: int, limit: int = 10, offset: int = 0) -> List[str]:
+        """Alias for get_user_completed_games()."""
+        return self.get_user_completed_games(user_id=user_id, limit=limit, offset=offset)
 
     def get_user_completed_games_count(self, user_id: int) -> int:
         """

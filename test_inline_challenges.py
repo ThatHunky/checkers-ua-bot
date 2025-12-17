@@ -65,7 +65,7 @@ def test_delete_inline_challenge():
         "creator_name": "AnotherUser",
         "creator_username": "anotheruser",
         "inline_message_id": inline_message_id,
-        "mode": "ranked"
+        "mode": "rated"
     }
     
     # Save and verify
@@ -145,7 +145,7 @@ def test_inline_challenge_mode_preservation():
     """Test that challenge mode is preserved."""
     repo = setup_repo()
     
-    for mode in ["casual", "ranked", "practice"]:
+    for mode in ["casual", "rated", "practice"]:
         inline_message_id = f"mode_test_{mode}"
         challenge_data = {
             "creator_id": 100,

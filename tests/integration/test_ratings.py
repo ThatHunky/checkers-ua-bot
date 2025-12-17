@@ -272,6 +272,61 @@ class TestGameRecording:
         # Second call should return the same post-game rating (not apply changes again).
         assert winner_data_2["rating"] == winner_data_1["rating"]
         assert loser_data_2["rating"] == loser_data_1["rating"]
+
+    @pytest.mark.asyncio
+    async def test_record_draw_updates_both_players(self, temp_ratings_db: RatingSystem):
+        """record_draw should increment draws + games_played and keep rating changes zero-sum."""
+        p1_id, p2_id = 52001, 52002
+
+        p1_before = await temp_ratings_db.get_player(p1_id, "P1")
+        p2_before = await temp_ratings_db.get_player(p2_id, "P2")
+
+        p1_after, p2_after = await temp_ratings_db.record_draw(
+            player1_id=p1_id,
+            player1_name="P1",
+            player2_id=p2_id,
+            player2_name="P2",
+            game_key="chat:2:2",
+            move_count=40,
+            game_duration=120,
+        )
+
+        assert p1_after["games_played"] == p1_before["games_played"] + 1
+        assert p2_after["games_played"] == p2_before["games_played"] + 1
+        assert p1_after.get("draws", 0) == p1_before.get("draws", 0) + 1
+        assert p2_after.get("draws", 0) == p2_before.get("draws", 0) + 1
+
+        p1_change = int(p1_after.get("rating_change", 0) or 0)
+        p2_change = int(p2_after.get("rating_change", 0) or 0)
+        assert p1_change + p2_change == 0
+
+    @pytest.mark.asyncio
+    async def test_record_draw_idempotent_with_game_key(self, temp_ratings_db: RatingSystem):
+        """Calling record_draw twice with the same game_key must not double-count draws/games."""
+        game_key = "chat:3:3"
+
+        p1_after_1, p2_after_1 = await temp_ratings_db.record_draw(
+            player1_id=53001,
+            player1_name="A",
+            player2_id=53002,
+            player2_name="B",
+            game_key=game_key,
+            move_count=10,
+        )
+
+        p1_after_2, p2_after_2 = await temp_ratings_db.record_draw(
+            player1_id=53001,
+            player1_name="A",
+            player2_id=53002,
+            player2_name="B",
+            game_key=game_key,
+            move_count=10,
+        )
+
+        assert p1_after_2["games_played"] == p1_after_1["games_played"]
+        assert p2_after_2["games_played"] == p2_after_1["games_played"]
+        assert p1_after_2.get("draws", 0) == p1_after_1.get("draws", 0)
+        assert p2_after_2.get("draws", 0) == p2_after_1.get("draws", 0)
     
     @pytest.mark.asyncio
     async def test_record_game_streak_tracking(self, temp_ratings_db: RatingSystem):

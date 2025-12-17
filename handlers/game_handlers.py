@@ -232,6 +232,7 @@ class GameHandlers:
         engine = CheckersEngine()
         board_state = engine.board
         first_turn = YELLOW  # Yellow moves first
+        initial_pos_key = CheckersEngine.position_key(board_state, first_turn)
         
         # Get first names from repository if not in user dict
         red_user_data = self.repo.get_user_by_id(red_user["user_id"])
@@ -272,6 +273,10 @@ class GameHandlers:
             "promotions_count": 0,
             "max_captures_in_move": 0,
             "total_captures": 0,
+            # Threefold repetition tracking: position_key -> count
+            "position_counts": {initial_pos_key: 1},
+            # Marker so we can safely backfill for legacy games without double work.
+            "position_counts_backfilled": True,
         }
 
         # Render initial board
@@ -555,7 +560,8 @@ class GameHandlers:
         """Handle inline queries for creating game challenges."""
 
         query = update.inline_query
-        query_text = (query.query or "").strip().lower()
+        raw_query = (query.query or "").strip()
+        query_text = raw_query.lower()
         user = query.from_user
 
         # If the inline query is empty or "play"/"start", show challenge options for different modes
@@ -674,9 +680,19 @@ class GameHandlers:
                 return
 
         # If query contains a code, provide a simple inline share message with the supplied code
+        code = raw_query.strip().upper()
+        invite = self.matchmaking.get_invite(code) if code else None
+        mode_text = ""
+        if invite and invite.get("mode"):
+            mode = locales.normalize_mode(invite.get("mode", "casual"))
+            mode_text = (
+                f"Режим: <b>{locales.mode_label(mode)}</b>\n"
+                f"<i>{locales.mode_note(mode)}</i>\n"
+            )
         share_text = (
             "🎲 Гра в шашки!\n"
-            f"Код запрошення: {query_text}\n"
+            f"Код запрошення: {code}\n"
+            f"{mode_text}"
             "Приєднуйтесь через <code>/join &lt;код&gt;</code>."
         )
 
@@ -718,7 +734,8 @@ class GameHandlers:
             if result_id == "challenge" or result_id == "challenge_casual":
                 mode = "casual"
             elif result_id == "challenge_ranked":
-                mode = "ranked"
+                # Canonical internal name is "rated" (historically also used "ranked")
+                mode = "rated"
             elif result_id == "challenge_practice":
                 mode = "practice"
             else:
@@ -760,6 +777,12 @@ class GameHandlers:
             return
 
         code = args[0].strip().upper()
+        if await self._maybe_confirm_restart_from_message(
+            message,
+            update.effective_user,
+            intent={"type": "join_command", "code": code},
+        ):
+            return
         logger.info(
             "[/join] user=%s chat=%s code=%s",
             update.effective_user.id,
@@ -805,6 +828,7 @@ class GameHandlers:
             return
 
         creator_name = invite.get("creator_username") or invite.get("creator_first_name") or creator_user_id
+        mode = locales.normalize_mode(invite.get("mode", "casual"))
         logger.info(
             "[/join] accepted code=%s user=%s creator=%s",
             code,
@@ -813,7 +837,9 @@ class GameHandlers:
         )
         await message.reply_text(
             f"✅ Ви приєдналися до запрошення {code}. "
-            f"Грайте разом із {creator_name}."
+            f"Грайте разом із {creator_name}.\n\n"
+            f"Режим: {locales.mode_label(mode)}\n"
+            f"{locales.mode_note(mode)}"
         )
 
     async def replay_game_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -886,10 +912,14 @@ class GameHandlers:
                 board = moves[-1].get("board_before")
             if not board:
                 board = game_data.get("initial_board")
-            summary = (
-                f"Фінальна позиція.\n"
-                f"Переможець: {game_data['winner_name']} ({game_data['winner_color']})."
-            )
+            winner_color = (game_data.get("winner_color") or "").lower()
+            if winner_color == "draw" or int(game_data.get("winner_id", 0) or 0) == 0:
+                summary = "Фінальна позиція.\nРезультат: Нічия."
+            else:
+                summary = (
+                    f"Фінальна позиція.\n"
+                    f"Переможець: {game_data['winner_name']} ({game_data['winner_color']})."
+                )
         else:
             move = moves[step]
             board = move.get("board_before") or game_data.get("initial_board")
@@ -937,6 +967,192 @@ class GameHandlers:
             reply_markup=keyboard,
         )
 
+    async def review_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """
+        View-only, paginated move review during an active game.
+
+        Callback data:
+          - review_live            -> return to live game view
+          - review_{step:int}      -> show board for that step (board_before for move index)
+        """
+        query = update.callback_query
+        if not query:
+            return
+
+        try:
+            game_state, chat_id, message_id, inline_message_id = self._get_game_state_from_query(query)
+            if not game_state:
+                await query.answer(locales.ERROR_NO_GAME, show_alert=True)
+                return
+
+            # Only players may use review mode (prevents spectators from disrupting the shared message).
+            user_id = query.from_user.id
+            if not self._validate_player_in_game(user_id, game_state):
+                await query.answer("❌ Тільки гравці можуть переглядати ходи під час гри.", show_alert=True)
+                return
+
+            data = (query.data or "").strip()
+            if data == "review_live":
+                # Render live view for THIS message only (do not force-update the other player's message in private matches).
+                engine = CheckersEngine()
+                engine.set_board_state(
+                    {
+                        "board": game_state["board"],
+                        "current_turn": game_state["current_turn"],
+                        "move_count": game_state.get("move_count", 0),
+                    }
+                )
+
+                board_text = BoardRenderer.render(engine.board)
+                players_msg = MessageUpdater._get_players_message(game_state)
+                turn_msg = MessageUpdater._get_turn_message(game_state)
+                keyboard = BoardRenderer.create_move_keyboard(
+                    engine,
+                    selected_pos=None,
+                    move_count=engine.move_count,
+                    pending_capture=game_state.get("pending_capture"),
+                )
+                message_text = f"{players_msg}\n\n{board_text}\n\n{turn_msg}"
+
+                await query.answer()
+                if inline_message_id:
+                    await self._safe_edit_message(
+                        context.bot,
+                        inline_message_id=inline_message_id,
+                        text=message_text,
+                        reply_markup=keyboard,
+                        parse_mode=ParseMode.HTML,
+                    )
+                else:
+                    # Be robust to mock/test shapes where chat_id may be on message.chat_id.
+                    effective_chat_id = chat_id
+                    effective_message_id = message_id
+                    if effective_chat_id is None and query.message is not None:
+                        effective_chat_id = getattr(getattr(query.message, "chat", None), "id", None) or getattr(
+                            query.message, "chat_id", None
+                        )
+                    if effective_message_id is None and query.message is not None:
+                        effective_message_id = getattr(query.message, "message_id", None)
+
+                    if effective_chat_id is None or effective_message_id is None:
+                        return
+                    await self._safe_edit_message(
+                        context.bot,
+                        chat_id=effective_chat_id,
+                        message_id=effective_message_id,
+                        text=message_text,
+                        reply_markup=keyboard,
+                        parse_mode=ParseMode.HTML,
+                    )
+                return
+
+            # Parse callback data: review_{step}
+            parts = data.split("_", 1)
+            if len(parts) != 2:
+                await query.answer("❌ Невірний формат перегляду.", show_alert=True)
+                return
+            try:
+                step = int(parts[1])
+            except ValueError:
+                await query.answer("❌ Невірний формат перегляду.", show_alert=True)
+                return
+
+            moves = game_state.get("move_history", []) or []
+            total_steps = len(moves)
+            # Allow a "current/live" step at total_steps.
+            step = max(0, min(step, total_steps))
+
+            # Build board + summary for this step.
+            if step == total_steps:
+                board = game_state.get("board") or game_state.get("initial_board") or CheckersEngine.init_board()
+                summary = f"🟢 Поточна позиція. (хід {total_steps}/{total_steps})"
+            else:
+                move = moves[step] if step < total_steps else None
+                board = None
+                if isinstance(move, dict):
+                    board = move.get("board_before") or None
+                if not board:
+                    board = game_state.get("initial_board") or CheckersEngine.init_board()
+
+                mover = "синіх" if (isinstance(move, dict) and move.get("player") == "blue") else "жовтих"
+                from_pos = self._pos_to_human((move or {}).get("from", 0) if isinstance(move, dict) else 0)
+                to_pos = self._pos_to_human((move or {}).get("to", 0) if isinstance(move, dict) else 0)
+                captures = (move or {}).get("captures") if isinstance(move, dict) else None
+                captures = captures or []
+                capture_text = ""
+                if captures:
+                    captured_squares = ", ".join(self._pos_to_human(p) for p in captures)
+                    capture_text = f"; б'є: {captured_squares}"
+                summary = f"🔎 Перегляд: хід {step + 1}/{total_steps} ({mover}): {from_pos} → {to_pos}{capture_text}"
+
+            board_text = BoardRenderer.render(board)
+            players_msg = MessageUpdater._get_players_message(game_state)
+            turn_msg = MessageUpdater._get_turn_message(game_state)
+            header = f"{players_msg}\n\n{board_text}\n\n{summary}\n\n{turn_msg}"
+
+            prev_step = max(step - 1, 0)
+            next_step = min(step + 1, total_steps)
+
+            # Pager keyboard + return-to-live. Keep forfeit available.
+            keyboard = InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton("⏪ Попередній", callback_data=f"review_{prev_step}"),
+                        InlineKeyboardButton("⏩ Наступний", callback_data=f"review_{next_step}"),
+                    ],
+                    [
+                        InlineKeyboardButton("🔁 На початок", callback_data="review_0"),
+                        InlineKeyboardButton("🟢 Поточна", callback_data=f"review_{total_steps}"),
+                    ],
+                    [
+                        InlineKeyboardButton("↩️ До гри", callback_data="review_live"),
+                        InlineKeyboardButton(locales.BTN_FORFEIT, callback_data="forfeit"),
+                    ],
+                ]
+            )
+
+            await query.answer()
+            if inline_message_id:
+                await self._safe_edit_message(
+                    context.bot,
+                    inline_message_id=inline_message_id,
+                    text=header,
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML,
+                )
+            else:
+                effective_chat_id = chat_id
+                effective_message_id = message_id
+                if effective_chat_id is None and query.message is not None:
+                    effective_chat_id = getattr(getattr(query.message, "chat", None), "id", None) or getattr(
+                        query.message, "chat_id", None
+                    )
+                if effective_message_id is None and query.message is not None:
+                    effective_message_id = getattr(query.message, "message_id", None)
+
+                if effective_chat_id is None or effective_message_id is None:
+                    return
+
+                await self._safe_edit_message(
+                    context.bot,
+                    chat_id=effective_chat_id,
+                    message_id=effective_message_id,
+                    text=header,
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML,
+                )
+        except asyncio.TimeoutError:
+            try:
+                await query.answer("⏱️ Операція зайняла занадто багато часу. Спробуйте ще раз.", show_alert=True)
+            except Exception:
+                pass
+        except Exception as e:
+            logger.exception(f"[review_callback] Error: {e}")
+            try:
+                await query.answer("❌ Сталася помилка. Спробуйте ще раз.", show_alert=True)
+            except Exception:
+                pass
+
     async def menu_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle menu navigation callbacks."""
         query = update.callback_query
@@ -958,9 +1174,21 @@ class GameHandlers:
             await query.message.edit_text(locales.ABOUT_TEXT)
         elif data in {PLAY_RATED, PLAY_CASUAL}:
             mode = "rated" if data == PLAY_RATED else "casual"
+            if await self._maybe_confirm_restart_from_query(
+                query,
+                context=context,
+                intent={"type": "matchmaking", "mode": mode},
+            ):
+                return
             await self._start_matchmaking(query, mode)
         elif data in {INVITE_RATED, INVITE_CASUAL}:
             mode = "rated" if data == INVITE_RATED else "casual"
+            if await self._maybe_confirm_restart_from_query(
+                query,
+                context=context,
+                intent={"type": "invite_create", "mode": mode},
+            ):
+                return
             code = self.matchmaking.create_invite(
                 query.from_user.id,
                 query.message.chat_id,
@@ -980,7 +1208,11 @@ class GameHandlers:
                 ]
             )
             await query.message.edit_text(
-                locales.INVITE_CREATED.format(code=code),
+                locales.INVITE_CREATED_WITH_MODE.format(
+                    code=code,
+                    mode_label=locales.mode_label(mode),
+                    mode_note=locales.mode_note(mode),
+                ),
                 parse_mode="HTML",
                 reply_markup=keyboard,
             )
@@ -1073,7 +1305,7 @@ class GameHandlers:
             # Answer the callback query after validation
             await query.answer()
 
-            mode = challenge.get("mode", "casual")
+            mode = locales.normalize_mode(challenge.get("mode", "casual"))
             creator_name = challenge.get("creator_name", "Гравець")
             creator_username = challenge.get("creator_username")
             
@@ -1140,6 +1372,9 @@ class GameHandlers:
                 "promotions_count": 0,
                 "max_captures_in_move": 0,
                 "total_captures": 0,
+                # Threefold repetition tracking: position_key -> count
+                "position_counts": {CheckersEngine.position_key(board_state, first_turn): 1},
+                "position_counts_backfilled": True,
             }
 
             # (debug log removed)
@@ -1216,6 +1451,13 @@ class GameHandlers:
         try:
             if not query:
                 return
+
+            if await self._maybe_confirm_restart_from_query(
+                query,
+                context=context,
+                intent={"type": "accept_inline"},
+            ):
+                return
             
             callback_data = query.data
             inline_message_id = query.inline_message_id
@@ -1254,7 +1496,7 @@ class GameHandlers:
             # Answer the callback query after validation
             await query.answer()
             
-            mode = challenge.get("mode", "casual")
+            mode = locales.normalize_mode(challenge.get("mode", "casual"))
             creator_name = challenge.get("creator_name", "Гравець")
             creator_username = challenge.get("creator_username")
             
@@ -1318,6 +1560,9 @@ class GameHandlers:
                 "promotions_count": 0,
                 "max_captures_in_move": 0,
                 "total_captures": 0,
+                # Threefold repetition tracking: position_key -> count
+                "position_counts": {CheckersEngine.position_key(board_state, first_turn): 1},
+                "position_counts_backfilled": True,
             }
             
             # Save inline game
@@ -1496,6 +1741,12 @@ class GameHandlers:
             return
 
         mode = "rated" if mode == "rated" else "casual"
+        if await self._maybe_confirm_restart_from_query(
+            query,
+            context=context,
+            intent={"type": "group_invite_create", "mode": mode},
+        ):
+            return
         logger.info(
             "[invite:create] user=%s chat=%s mode=%s",
             query.from_user.id,
@@ -1513,7 +1764,8 @@ class GameHandlers:
 
         text = (
             "🤝 Запрошення на гру у цій групі\n"
-            f"Режим: {'Рейтинг' if mode == 'rated' else 'Без рейтингу'}\n"
+            f"Режим: <b>{locales.mode_label(mode)}</b>\n"
+            f"<i>{locales.mode_note(mode)}</i>\n"
             f"Створив: {query.from_user.first_name}\n"
             f"Код: {code} (можна <code>/join {html.escape(code)}</code>)"
         )
@@ -1544,6 +1796,13 @@ class GameHandlers:
 
         data = query.data.replace("group_invite_join_", "", 1)
         code = data.strip().upper()
+
+        if await self._maybe_confirm_restart_from_query(
+            query,
+            context=context,
+            intent={"type": "group_invite_join", "code": code},
+        ):
+            return
         logger.info(
             "[invite:join] user=%s chat=%s code=%s",
             query.from_user.id,
@@ -1580,7 +1839,7 @@ class GameHandlers:
             await query.answer("❌ Не можна приєднатись до власного запрошення.", show_alert=True)
             return
 
-        mode = invite.get("mode", "rated")
+        mode = locales.normalize_mode(invite.get("mode") or "rated")
 
         # Atomically mark invite as used now
         invite_used = self.matchmaking.accept_invite(query.from_user.id, chat.id, code)
@@ -1637,7 +1896,7 @@ class GameHandlers:
 
         try:
             await query.message.edit_text(
-                f"✅ Пара знайдена! Режим: {'Рейтинг' if mode == 'rated' else 'Без рейтингу'}",
+                f"✅ Пара знайдена! Режим: {locales.mode_label(mode)}",
                 reply_markup=None,
             )
         except Exception:
@@ -1703,11 +1962,418 @@ class GameHandlers:
             ]
         )
         await query.message.edit_text(
-            f"{locales.SEARCHING_TITLE}\n\nРежим: {mode}\nРейтинг: {ticket.rating}",
+            f"{locales.SEARCHING_TITLE}\n\n"
+            f"Режим: {locales.mode_label(mode)}\n"
+            f"{locales.mode_note(mode)}\n"
+            f"Рейтинг: {ticket.rating}",
             reply_markup=keyboard,
         )
 
     # ------------------------------------------------------------------
+
+    def _get_active_game_ref(self, user_id: int) -> Optional[dict]:
+        """Return a reference to the user's active game (regular or inline), if any."""
+        info = self.repo.get_user_game(user_id)
+        if info:
+            chat_id, message_id, _ = info
+            return {"type": "regular", "chat_id": int(chat_id), "message_id": int(message_id)}
+        inline_info = self.repo.get_user_inline_game(user_id)
+        if inline_info:
+            inline_message_id, _ = inline_info
+            return {"type": "inline", "inline_message_id": inline_message_id}
+        return None
+
+    async def _maybe_confirm_restart_from_query(self, query, context, intent: dict) -> bool:
+        """
+        If user has an active game, show restart confirmation and return True to stop the caller.
+        Designed for callback-driven entrypoints.
+        """
+        if not query or not getattr(query, "from_user", None):
+            return False
+
+        user_id = int(query.from_user.id)
+        active_ref = self._get_active_game_ref(user_id)
+        if not active_ref:
+            return False
+
+        requester_name = query.from_user.first_name or query.from_user.username or "Гравець"
+        token = uuid.uuid4().hex[:16]
+        self.repo.save_confirm_token(
+            token,
+            {
+                "kind": "restart_confirm",
+                "authorized_user_id": user_id,
+                "requester_name": requester_name,
+                "active_game_ref": active_ref,
+                "intent": intent,
+            },
+        )
+
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        f"✅ Почати нову ({requester_name})",
+                        callback_data=f"confirm_restart_token_{token}",
+                    ),
+                    InlineKeyboardButton(
+                        "❌ Ні",
+                        callback_data=f"restart_abort_token_{token}",
+                    ),
+                ]
+            ]
+        )
+        text = (
+            "⚠️ У вас вже є активна гра.\n\n"
+            "Почати нову (це призведе до здачі у поточній)?"
+        )
+
+        # Inline callbacks: edit inline message.
+        if getattr(query, "inline_message_id", None):
+            if context is None:
+                return True
+            await query.answer()
+            await self._safe_edit_message(
+                context.bot,
+                inline_message_id=query.inline_message_id,
+                text=text,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML,
+            )
+            return True
+
+        # Regular callbacks: edit the message in chat.
+        await query.answer()
+        try:
+            await query.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        except Exception:
+            # Fallback via bot edit by ID
+            if context is not None and query.message is not None:
+                await self._safe_edit_message(
+                    context.bot,
+                    chat_id=query.message.chat.id,
+                    message_id=query.message.message_id,
+                    text=text,
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML,
+                )
+        return True
+
+    async def _maybe_confirm_restart_from_message(self, message, user, intent: dict) -> bool:
+        """
+        If user has an active game, send restart confirmation and return True to stop the caller.
+        Designed for command-driven entrypoints.
+        """
+        if not message or not user:
+            return False
+
+        user_id = int(user.id)
+        active_ref = self._get_active_game_ref(user_id)
+        if not active_ref:
+            return False
+
+        requester_name = user.first_name or user.username or "Гравець"
+        token = uuid.uuid4().hex[:16]
+        self.repo.save_confirm_token(
+            token,
+            {
+                "kind": "restart_confirm",
+                "authorized_user_id": user_id,
+                "requester_name": requester_name,
+                "active_game_ref": active_ref,
+                "intent": intent,
+            },
+        )
+
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        f"✅ Почати нову ({requester_name})",
+                        callback_data=f"confirm_restart_token_{token}",
+                    ),
+                    InlineKeyboardButton("❌ Ні", callback_data=f"restart_abort_token_{token}"),
+                ]
+            ]
+        )
+        text = (
+            "⚠️ У вас вже є активна гра.\n\n"
+            "Почати нову (це призведе до здачі у поточній)?"
+        )
+        await message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        return True
+
+    async def _cancel_game_without_moves(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        game_state: dict,
+        *,
+        chat_id: Optional[int] = None,
+        message_id: Optional[int] = None,
+        inline_message_id: Optional[str] = None,
+    ) -> None:
+        """Cancel a game with move_count==0 (no rating changes)."""
+        engine = CheckersEngine()
+        engine.set_board_state(
+            {
+                "board": game_state["board"],
+                "current_turn": game_state["current_turn"],
+                "move_count": int(game_state.get("move_count", 0) or 0),
+            }
+        )
+        board_text = BoardRenderer.render(engine.board)
+        cancel_message = f"{board_text}\n\n🚫 Гра скасована. Рейтинг не змінено."
+
+        if inline_message_id:
+            try:
+                await self._safe_edit_message(
+                    context.bot,
+                    inline_message_id=inline_message_id,
+                    text=cancel_message,
+                    reply_markup=None,
+                )
+                self.repo.delete_inline_game(inline_message_id)
+            except Exception:
+                # Best effort; if edit fails, still delete state to unblock.
+                self.repo.delete_inline_game(inline_message_id)
+            return
+
+        if game_state.get("is_private_match"):
+            try:
+                await self._safe_edit_message(
+                    context.bot,
+                    chat_id=game_state["opponent_chat_id"],
+                    message_id=game_state["opponent_message_id"],
+                    text=cancel_message,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+            try:
+                await self._safe_edit_message(
+                    context.bot,
+                    chat_id=game_state["challenger_chat_id"],
+                    message_id=game_state["challenger_message_id"],
+                    text=cancel_message,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+            self.repo.delete_game(game_state["opponent_chat_id"], game_state["opponent_message_id"])
+            self.repo.delete_game(game_state["challenger_chat_id"], game_state["challenger_message_id"])
+            return
+
+        if chat_id is not None and message_id is not None:
+            try:
+                await self._safe_edit_message(
+                    context.bot,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=cancel_message,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+            self.repo.delete_game(chat_id, message_id)
+
+    async def restart_abort_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Abort restart confirmation."""
+        query = update.callback_query
+        user = query.from_user
+        token = (query.data or "").replace("restart_abort_token_", "", 1)
+        payload = self.repo.get_confirm_token(token) or {}
+
+        authorized_user_id = int(payload.get("authorized_user_id", 0) or 0)
+        requester_name = payload.get("requester_name") or "Гравець"
+        if authorized_user_id and user.id != authorized_user_id:
+            await query.answer(f"Лише {requester_name} може скасувати дію.", show_alert=True)
+            return
+
+        await query.answer("✅ Скасовано")
+        try:
+            if query.inline_message_id:
+                await self._safe_edit_message(
+                    context.bot,
+                    inline_message_id=query.inline_message_id,
+                    text="✅ Гаразд. Поточна гра продовжується.",
+                    reply_markup=None,
+                )
+            else:
+                await query.message.edit_text("✅ Гаразд. Поточна гра продовжується.", reply_markup=None)
+        except Exception:
+            pass
+        self.repo.delete_confirm_token(token)
+
+    async def confirm_restart_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Confirm restart: forfeit/cancel active game, then proceed with intended action."""
+        query = update.callback_query
+        user = query.from_user
+        token = (query.data or "").replace("confirm_restart_token_", "", 1)
+        payload = self.repo.get_confirm_token(token) or {}
+
+        authorized_user_id = int(payload.get("authorized_user_id", 0) or 0)
+        requester_name = payload.get("requester_name") or "Гравець"
+        if authorized_user_id and user.id != authorized_user_id:
+            await query.answer(f"Лише {requester_name} може підтвердити дію.", show_alert=True)
+            return
+
+        active_ref = payload.get("active_game_ref") or {}
+        intent = payload.get("intent") or {}
+
+        # Forfeit/cancel the active game first (best-effort).
+        try:
+            if active_ref.get("type") == "inline":
+                inline_id = active_ref.get("inline_message_id")
+                game_state = self._get_game_state(inline_message_id=inline_id) if inline_id else None
+                if game_state:
+                    move_count = int(game_state.get("move_count", 0) or 0)
+                    if move_count == 0:
+                        await self._cancel_game_without_moves(
+                            context, game_state, inline_message_id=inline_id
+                        )
+                    else:
+                        forfeiter_id = authorized_user_id or user.id
+                        winner = YELLOW if forfeiter_id == game_state.get("blue_player_id") else BLUE
+                        engine = CheckersEngine()
+                        engine.set_board_state(
+                            {
+                                "board": game_state["board"],
+                                "current_turn": game_state["current_turn"],
+                                "move_count": move_count,
+                            }
+                        )
+                        await self._handle_game_end(
+                            context=context,
+                            engine=engine,
+                            game_state=game_state,
+                            winner=winner,
+                            inline_message_id=inline_id,
+                            query=None,
+                            end_reason="forfeit",
+                        )
+            else:
+                chat_id = active_ref.get("chat_id")
+                message_id = active_ref.get("message_id")
+                game_state = self._get_game_state(chat_id, message_id) if chat_id and message_id else None
+                if game_state:
+                    move_count = int(game_state.get("move_count", 0) or 0)
+                    if move_count == 0:
+                        await self._cancel_game_without_moves(
+                            context, game_state, chat_id=int(chat_id), message_id=int(message_id)
+                        )
+                    else:
+                        forfeiter_id = authorized_user_id or user.id
+                        winner = YELLOW if forfeiter_id == game_state.get("blue_player_id") else BLUE
+                        engine = CheckersEngine()
+                        engine.set_board_state(
+                            {
+                                "board": game_state["board"],
+                                "current_turn": game_state["current_turn"],
+                                "move_count": move_count,
+                            }
+                        )
+                        await self._handle_game_end(
+                            context=context,
+                            engine=engine,
+                            game_state=game_state,
+                            winner=winner,
+                            chat_id=int(chat_id),
+                            message_id=int(message_id),
+                            query=None,
+                            end_reason="forfeit",
+                        )
+        except Exception:
+            # Don't block user from proceeding with the intended action.
+            pass
+
+        # Proceed with intended action
+        try:
+            kind = intent.get("type")
+            if kind == "matchmaking":
+                mode = intent.get("mode", "rated")
+                await query.answer()
+                await self._start_matchmaking(query, mode)
+            elif kind == "invite_create":
+                mode = intent.get("mode", "rated")
+                code = self.matchmaking.create_invite(
+                    user.id,
+                    query.message.chat_id,
+                    mode,
+                    creator_username=user.username,
+                    creator_first_name=user.first_name,
+                )["code"]
+                keyboard = InlineKeyboardMarkup(
+                    [
+                        [InlineKeyboardButton(locales.INVITE_SHARE, switch_inline_query=code)],
+                        [InlineKeyboardButton(locales.INVITE_CANCEL, callback_data=MM_CANCEL)],
+                        [InlineKeyboardButton(locales.BTN_BACK, callback_data=BACK_TO_PLAY)],
+                    ]
+                )
+                await query.message.edit_text(
+                    locales.INVITE_CREATED_WITH_MODE.format(
+                        code=code,
+                        mode_label=locales.mode_label(mode),
+                        mode_note=locales.mode_note(mode),
+                    ),
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                )
+            elif kind == "group_invite_create":
+                mode = intent.get("mode", "rated")
+                chat = query.message.chat if query.message else None
+                invite = self.matchmaking.create_invite(
+                    user.id,
+                    chat.id if chat else query.message.chat_id,
+                    mode,
+                    creator_username=user.username,
+                    creator_first_name=user.first_name,
+                )
+                code = invite["code"]
+                text = (
+                    "🤝 Запрошення на гру у цій групі\n"
+                    f"Режим: <b>{locales.mode_label(mode)}</b>\n"
+                    f"<i>{locales.mode_note(mode)}</i>\n"
+                    f"Створив: {user.first_name}\n"
+                    f"Код: {code} (можна <code>/join {html.escape(code)}</code>)"
+                )
+                keyboard = InlineKeyboardMarkup(
+                    [
+                        [InlineKeyboardButton("⚔️ Приєднатися", callback_data=f"group_invite_join_{code}")],
+                        [InlineKeyboardButton("❌ Скасувати", callback_data=f"group_invite_cancel_{code}")],
+                    ]
+                )
+                await query.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+            elif kind == "group_invite_join":
+                code = (intent.get("code") or "").strip().upper()
+                # Reuse the existing flow by setting query.data accordingly.
+                query.data = f"group_invite_join_{code}"
+                await self.group_invite_join_callback(update, context)
+            elif kind == "accept_inline":
+                # Reuse the existing inline accept handler on the same update/query.
+                await self.accept_inline_callback(update, context)
+            elif kind == "join_command":
+                code = (intent.get("code") or "").strip().upper()
+                invite = self.matchmaking.get_invite(code)
+                if not invite:
+                    await query.answer("❌ Запрошення не знайдено або вже використано.", show_alert=True)
+                else:
+                    result = self.matchmaking.accept_invite(user.id, query.message.chat_id, code)
+                    if not result:
+                        await query.answer("❌ Запрошення не знайдено або вже використано.", show_alert=True)
+                    else:
+                        creator_name = invite.get("creator_username") or invite.get("creator_first_name") or invite.get("creator_user_id")
+                        mode = locales.normalize_mode(invite.get("mode", "casual"))
+                        await query.message.edit_text(
+                            f"✅ Ви приєдналися до запрошення {code}. "
+                            f"Грайте разом із {creator_name}.\n\n"
+                            f"Режим: {locales.mode_label(mode)}\n"
+                            f"{locales.mode_note(mode)}",
+                            reply_markup=None,
+                        )
+            else:
+                await query.message.edit_text("✅ Готово.")
+        finally:
+            self.repo.delete_confirm_token(token)
 
     @staticmethod
     def _is_private_chat(chat) -> bool:
@@ -1812,6 +2478,66 @@ class GameHandlers:
             if not self._validate_player_in_game(user_id, game_state):
                 await query.answer("❌ Ви не є гравцем у цій грі!", show_alert=True)
                 return
+
+            # One-time backfill for games started before repetition tracking was deployed.
+            # We rebuild counts from move_history at turn boundaries (ignoring mid-capture continuation),
+            # then persist them going forward.
+            if not game_state.get("position_counts_backfilled"):
+                move_history = game_state.get("move_history") or []
+                initial_board = game_state.get("initial_board") or engine.board
+
+                counts: dict[str, int] = {}
+
+                def inc(board: list, turn: int) -> None:
+                    k = CheckersEngine.position_key(board, turn)
+                    counts[k] = int(counts.get(k, 0) or 0) + 1
+
+                # Count positions at the start of each turn (player switch boundaries).
+                if move_history and isinstance(move_history, list):
+                    # First recorded move starts from the initial position.
+                    first = move_history[0]
+                    board_before = first.get("board_before") or initial_board
+                    if isinstance(board_before, list):
+                        turn = BLUE if first.get("player") == "blue" else YELLOW
+                        inc(board_before, turn)
+
+                    prev_player = first.get("player")
+                    for rec in move_history[1:]:
+                        player = rec.get("player")
+                        if player != prev_player:
+                            board_before = rec.get("board_before") or initial_board
+                            if isinstance(board_before, list):
+                                turn = BLUE if player == "blue" else YELLOW
+                                inc(board_before, turn)
+                        prev_player = player
+                else:
+                    # No moves yet: starting position is yellow to move.
+                    if isinstance(initial_board, list):
+                        inc(initial_board, YELLOW)
+
+                # Include the current stable position (skip if a forced continuation is in progress).
+                pending_capture = game_state.get("pending_capture")
+                if not (pending_capture and pending_capture.get("must_continue")):
+                    inc(engine.board, engine.current_turn)
+
+                game_state["position_counts"] = counts
+                game_state["position_counts_backfilled"] = True
+
+                # If threefold repetition already occurred earlier in the game, end as a draw now.
+                # This can happen for games that started before tracking was enabled.
+                if counts and max(counts.values()) >= 3:
+                    await query.answer()
+                    await self._handle_game_draw(
+                        context=context,
+                        engine=engine,
+                        game_state=game_state,
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        inline_message_id=inline_message_id,
+                        query=query,
+                        end_reason="threefold",
+                    )
+                    return
 
             if not self._validate_player_turn(user_id, game_state):
                 await query.answer(locales.ERROR_NOT_YOUR_TURN, show_alert=True)
@@ -2041,6 +2767,27 @@ class GameHandlers:
                     query=query
                 )
             else:
+                # Threefold repetition draw detection (only after a stable turn; ignore forced continuation mid-capture).
+                if not must_continue:
+                    pos_key = CheckersEngine.position_key(engine.board, engine.current_turn)
+                    counts = game_state.get("position_counts")
+                    if not isinstance(counts, dict):
+                        counts = {}
+                        game_state["position_counts"] = counts
+                    counts[pos_key] = int(counts.get(pos_key, 0) or 0) + 1
+                    if counts[pos_key] >= 3:
+                        await self._handle_game_draw(
+                            context=context,
+                            engine=engine,
+                            game_state=game_state,
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            inline_message_id=inline_message_id,
+                            query=query,
+                            end_reason="threefold",
+                        )
+                        return
+
                 # Game continues - update state
                 game_state["board"] = engine.board
                 game_state["move_count"] = engine.move_count
@@ -2296,6 +3043,93 @@ class GameHandlers:
                         self.repo.delete_game(chat_id, message_id)
                 return
 
+            # Forfeit confirmation (for in-board buttons) for active games (move_count > 0)
+            requester_name = query.from_user.first_name or query.from_user.username or "Гравець"
+            engine = CheckersEngine()
+            engine.set_board_state(
+                {
+                    "board": game_state["board"],
+                    "current_turn": game_state["current_turn"],
+                    "move_count": move_count,
+                }
+            )
+
+            board_text = BoardRenderer.render(engine.board)
+            players_msg = MessageUpdater._get_players_message(game_state)
+            turn_msg = MessageUpdater._get_turn_message(game_state)
+            mode = locales.normalize_mode(game_state.get("mode", "casual"))
+            mode_line = f"Режим: <b>{locales.mode_label(mode)}</b>\n<i>{locales.mode_note(mode)}</i>"
+
+            confirm_text = (
+                f"{players_msg}\n{mode_line}\n\n{board_text}\n\n{turn_msg}\n\n"
+                f"⚠️ <b>{html.escape(requester_name)}</b>, підтвердити здачу?\n"
+                "⚠️ Ваш рейтинг може зменшитись."
+            )
+
+            # Inline games need token storage due to callback_data limits and inline IDs.
+            if inline_message_id:
+                token = uuid.uuid4().hex[:16]
+                self.repo.save_confirm_token(
+                    token,
+                    {
+                        "kind": "forfeit_confirm",
+                        "inline_message_id": inline_message_id,
+                        "authorized_user_id": user_id,
+                        "requester_name": requester_name,
+                    },
+                )
+                keyboard = InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                f"✅ Так, здатися ({requester_name})",
+                                callback_data=f"confirm_forfeit_token_{token}",
+                            ),
+                            InlineKeyboardButton(
+                                "❌ Ні",
+                                callback_data=f"abort_forfeit_token_{token}",
+                            ),
+                        ]
+                    ]
+                )
+                await self._safe_edit_message(
+                    context.bot,
+                    inline_message_id=inline_message_id,
+                    text=confirm_text,
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML,
+                )
+            else:
+                if chat_id is None or message_id is None:
+                    await query.answer("❌ Помилка: не вдалося визначити повідомлення гри.", show_alert=True)
+                    return
+                keyboard = InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                f"✅ Так, здатися ({requester_name})",
+                                callback_data=f"confirm_forfeit_{chat_id}_{message_id}_{user_id}",
+                            ),
+                            InlineKeyboardButton(
+                                "❌ Ні",
+                                callback_data=f"abort_forfeit_{chat_id}_{message_id}_{user_id}",
+                            ),
+                        ]
+                    ]
+                )
+                await self._safe_edit_message(
+                    context.bot,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=confirm_text,
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML,
+                )
+
+            elapsed = (time.time() - start_time) * 1000
+            logger.debug(f"[forfeit_callback] Confirmation shown in {elapsed:.2f}ms: user={user_id}, move_count={move_count}")
+            return
+
             # Determine winner (opponent of forfeiting player)
             if user_id == game_state["blue_player_id"]:
                 winner = YELLOW  # Opponent wins
@@ -2332,6 +3166,82 @@ class GameHandlers:
         except Exception as e:
             logger.exception(f"[forfeit_callback] Error: user={user_id}, error={e}")
             await query.answer("❌ Сталася помилка. Спробуйте ще раз.", show_alert=True)
+
+    async def abort_forfeit_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Abort an in-board forfeit confirmation and restore the board UI."""
+        query = update.callback_query
+        user = query.from_user
+        data = query.data or ""
+
+        try:
+            # Token-backed (inline)
+            if data.startswith("abort_forfeit_token_"):
+                token = data.replace("abort_forfeit_token_", "", 1)
+                payload = self.repo.get_confirm_token(token) or {}
+                authorized_user_id = int(payload.get("authorized_user_id", 0) or 0)
+                requester_name = payload.get("requester_name") or "Гравець"
+                if authorized_user_id and user.id != authorized_user_id:
+                    await query.answer(f"Лише {requester_name} може скасувати дію.", show_alert=True)
+                    return
+
+                inline_message_id = payload.get("inline_message_id")
+                if not inline_message_id:
+                    await query.answer("❌ Ця дія вже неактивна.", show_alert=True)
+                    return
+
+                game_state = self._get_game_state(inline_message_id=inline_message_id)
+                if not game_state:
+                    await query.answer(locales.ERROR_NO_GAME, show_alert=True)
+                    return
+
+                engine = CheckersEngine()
+                engine.set_board_state(
+                    {
+                        "board": game_state["board"],
+                        "current_turn": game_state["current_turn"],
+                        "move_count": game_state.get("move_count", 0),
+                    }
+                )
+                await query.answer("✅ Скасовано")
+                await self._update_inline_game_message(context.bot, inline_message_id, engine, game_state)
+                self.repo.delete_confirm_token(token)
+                return
+
+            # Regular messages
+            # Format: abort_forfeit_{chat_id}_{message_id}_{authorized_user_id}
+            parts = data.split("_")
+            if len(parts) != 5:
+                await query.answer("❌ Помилка.", show_alert=True)
+                return
+            game_chat_id = int(parts[2])
+            game_message_id = int(parts[3])
+            authorized_user_id = int(parts[4])
+
+            if authorized_user_id and user.id != authorized_user_id:
+                await query.answer("❌ Лише автор може скасувати дію.", show_alert=True)
+                return
+
+            game_state = self._get_game_state(game_chat_id, game_message_id)
+            if not game_state:
+                await query.answer(locales.ERROR_NO_GAME, show_alert=True)
+                return
+
+            engine = CheckersEngine()
+            engine.set_board_state(
+                {
+                    "board": game_state["board"],
+                    "current_turn": game_state["current_turn"],
+                    "move_count": game_state.get("move_count", 0),
+                }
+            )
+            await query.answer("✅ Скасовано")
+            await self._update_game_message(query.message, engine, game_state, context)
+        except Exception as e:
+            logger.exception(f"[abort_forfeit_callback] Error: user={user.id if user else None}, error={e}")
+            try:
+                await query.answer("❌ Сталася помилка. Спробуйте ще раз.", show_alert=True)
+            except Exception:
+                pass
     
     async def new_game_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle new game button - just show welcome message."""
@@ -2426,7 +3336,7 @@ class GameHandlers:
         
         # Show confirmation
         keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Так, здатися", callback_data=f"confirm_forfeit_{chat_id}_{message_id}"),
+            InlineKeyboardButton(f"✅ Так, здатися ({user.first_name})", callback_data=f"confirm_forfeit_{chat_id}_{message_id}_{user.id}"),
             InlineKeyboardButton("❌ Ні", callback_data="cancel_abort")
         ]])
         
@@ -2523,136 +3433,120 @@ class GameHandlers:
         """Handle confirmation of forfeit."""
         query = update.callback_query
         user = query.from_user
-        
-        # Parse callback data: confirm_forfeit_{chat_id}_{message_id}
-        parts = query.data.split("_")
-        if len(parts) != 4:
-            await query.answer("❌ Помилка.", show_alert=True)
-            return
-        
-        game_chat_id = int(parts[2])
-        game_message_id = int(parts[3])
-        
-        # Get game state
-        game_state = self._get_game_state(game_chat_id, game_message_id)
-        
-        if not game_state:
-            await query.answer("❌ Гра вже закінчилась.", show_alert=True)
-            await query.edit_message_text("❌ Гра вже закінчилась.")
-            return
-        
-        # Verify user is a player
-        if user.id != game_state["blue_player_id"] and user.id != game_state["yellow_player_id"]:
-            await query.answer("❌ Ви не є гравцем у цій грі!", show_alert=True)
-            return
-        
-        # Determine winner (opponent)
-        if user.id == game_state["blue_player_id"]:
-            winner_id = game_state["yellow_player_id"]
-            winner_name = game_state["yellow_player_name"]
-            loser_id = game_state["blue_player_id"]
-            loser_name = game_state["blue_player_name"]
-        else:
-            winner_id = game_state["blue_player_id"]
-            winner_name = game_state["blue_player_name"]
-            loser_id = game_state["yellow_player_id"]
-            loser_name = game_state["yellow_player_name"]
-        
-        # Record rating changes
-        rating_msg = ""
-        mode = game_state.get("mode", "rated")
-        move_count = int(game_state.get("move_count", 0) or 0)
-        if self.rating_system and mode == "rated" and move_count > 0:
-            try:
-                # Stable per-game key to prevent double-recording (private matches are stored twice in Redis).
-                if (
-                    game_state.get("is_private_match")
-                    and game_state.get("challenger_chat_id")
-                    and game_state.get("challenger_message_id")
-                ):
-                    game_key = f"priv:{game_state['challenger_chat_id']}:{game_state['challenger_message_id']}"
-                else:
-                    game_key = f"chat:{game_chat_id}:{game_message_id}"
 
-                winner_color = "yellow" if winner_id == game_state.get("yellow_player_id") else "blue"
-                winner_data, loser_data = await self.rating_system.record_game(
-                    winner_id,
-                    winner_name,
-                    loser_id,
-                    loser_name,
-                    game_key=game_key,
-                    move_count=move_count,
-                    winner_pieces_lost=None,
-                    loser_pieces_lost=None,
-                    winner_color=winner_color,
-                )
-                rating_msg = (
-                    f"\n\n📊 Рейтинг:\n"
-                    f"🏆 {winner_name}: {winner_data['rating']} ({winner_data['rating_change']:+d})\n"
-                    f"💀 {loser_name}: {loser_data['rating']} ({loser_data['rating_change']:+d})"
-                )
-            except Exception:
-                pass
-        
-        # Delete game
-        forfeit_message = f"🏳️ <b>{user.first_name}</b> здався!\n\n🏆 Переможець: <b>{winner_name}</b>{rating_msg}"
-        
-        # For private matches, update both players' messages
-        if game_state.get("is_private_match"):
-            try:
-                await context.bot.edit_message_text(
-                    chat_id=game_state["opponent_chat_id"],
-                    message_id=game_state["opponent_message_id"],
-                    text=forfeit_message,
-                    parse_mode="HTML"
-                )
-            except Exception:
-                pass
-            
-            try:
-                await context.bot.edit_message_text(
-                    chat_id=game_state["challenger_chat_id"],
-                    message_id=game_state["challenger_message_id"],
-                    text=forfeit_message,
-                    parse_mode="HTML"
-                )
-            except Exception:
-                pass
-            
-            # Delete game from both chats
-            self.repo.delete_game(game_state["opponent_chat_id"], game_state["opponent_message_id"])
-            self.repo.delete_game(game_state["challenger_chat_id"], game_state["challenger_message_id"])
-        else:
-            # Update game message
-            try:
-                await context.bot.edit_message_text(
-                    chat_id=game_chat_id,
-                    message_id=game_message_id,
-                    text=forfeit_message,
-                    parse_mode="HTML"
-                )
-            except Exception:
-                pass
-            
-            # Delete game
-            self.repo.delete_game(game_chat_id, game_message_id)
-        
-        # Update confirmation message
-        await query.answer("Ви здались")
-        await query.edit_message_text(
-            f"🏳️ Ви здались. {winner_name} переміг!{rating_msg}",
-            parse_mode="HTML" if rating_msg else None
-        )
-        
-        # Notify winner
+        data = query.data or ""
+        inline_message_id = None
+        token = None
+        authorized_user_id: Optional[int] = None
+        requester_name: Optional[str] = None
+        game_chat_id: Optional[int] = None
+        game_message_id: Optional[int] = None
+
         try:
-            await context.bot.send_message(
-                chat_id=winner_id,
-                text=f"🏆 <b>{loser_name}</b> здався! Ви перемогли!{rating_msg}",
-                parse_mode="HTML"
+            # Token-backed (inline confirm from in-board UI)
+            if data.startswith("confirm_forfeit_token_"):
+                token = data.replace("confirm_forfeit_token_", "", 1)
+                payload = self.repo.get_confirm_token(token) or {}
+                inline_message_id = payload.get("inline_message_id")
+                authorized_user_id = int(payload.get("authorized_user_id", 0) or 0) or None
+                requester_name = payload.get("requester_name") or None
+            else:
+                # Formats:
+                # - confirm_forfeit_{chat_id}_{message_id}
+                # - confirm_forfeit_{chat_id}_{message_id}_{authorized_user_id}
+                parts = data.split("_")
+                if len(parts) not in (4, 5):
+                    await query.answer("❌ Помилка.", show_alert=True)
+                    return
+                game_chat_id = int(parts[2])
+                game_message_id = int(parts[3])
+                if len(parts) == 5:
+                    authorized_user_id = int(parts[4]) or None
+
+            if authorized_user_id and user.id != authorized_user_id:
+                await query.answer(f"Лише {requester_name or 'автор'} може підтвердити дію.", show_alert=True)
+                return
+
+            # Load game state
+            if inline_message_id:
+                game_state = self._get_game_state(inline_message_id=inline_message_id)
+            else:
+                if game_chat_id is None or game_message_id is None:
+                    await query.answer("❌ Помилка.", show_alert=True)
+                    return
+                game_state = self._get_game_state(game_chat_id, game_message_id)
+
+            if not game_state:
+                await query.answer("❌ Гра вже закінчилась.", show_alert=True)
+                try:
+                    await query.edit_message_text("❌ Гра вже закінчилась.")
+                except Exception:
+                    pass
+                if token:
+                    self.repo.delete_confirm_token(token)
+                return
+
+            # Verify user is a player (and authorized if provided above)
+            if user.id != game_state.get("blue_player_id") and user.id != game_state.get("yellow_player_id"):
+                await query.answer("❌ Ви не є гравцем у цій грі!", show_alert=True)
+                return
+
+            forfeiting_user_id = authorized_user_id or user.id
+            if forfeiting_user_id == game_state.get("blue_player_id"):
+                winner = YELLOW
+            else:
+                winner = BLUE
+
+            engine = CheckersEngine()
+            engine.set_board_state(
+                {
+                    "board": game_state["board"],
+                    "current_turn": game_state["current_turn"],
+                    "move_count": game_state.get("move_count", 0),
+                }
             )
-        except Exception:
-            pass
+
+            # Only pass query into _handle_game_end when the callback was clicked on the actual game message.
+            use_query_for_end = False
+            if not inline_message_id and game_chat_id is not None and game_message_id is not None:
+                try:
+                    use_query_for_end = (
+                        query.message is not None
+                        and query.message.chat is not None
+                        and query.message.chat.id == game_chat_id
+                        and query.message.message_id == game_message_id
+                    )
+                except Exception:
+                    use_query_for_end = False
+
+            await query.answer("🏳️ Ви здались")
+            await self._handle_game_end(
+                context=context,
+                engine=engine,
+                game_state=game_state,
+                winner=winner,
+                chat_id=game_chat_id,
+                message_id=game_message_id,
+                inline_message_id=inline_message_id,
+                query=query if use_query_for_end else None,
+                end_reason="forfeit",
+            )
+
+            # If this confirmation was out-of-band (e.g. /forfeit command), update the confirmation prompt message.
+            if not use_query_for_end:
+                try:
+                    await query.edit_message_text("🏳️ Ви здались. Гру завершено.")
+                except Exception:
+                    pass
+
+            if token:
+                self.repo.delete_confirm_token(token)
+        except Exception as e:
+            logger.exception(f"[confirm_forfeit_callback] Error: user={user.id if user else None}, error={e}")
+            try:
+                await query.answer("❌ Сталася помилка. Спробуйте ще раз.", show_alert=True)
+            except Exception:
+                pass
     
     async def cancel_abort_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle aborting cancel/forfeit confirmation."""
@@ -3116,7 +4010,7 @@ class GameHandlers:
         loser_name = game_state["yellow_player_name"] if winner == BLUE else game_state["blue_player_name"]
         
         board_text = BoardRenderer.render(engine.board)
-        mode = game_state.get("mode", "rated")
+        mode = locales.normalize_mode(game_state.get("mode") or "rated")
         
         # Calculate game statistics
         from datetime import datetime as dt
@@ -3456,6 +4350,211 @@ class GameHandlers:
                 logger.warning(f"[_handle_game_end] Failed to update regular game over message: {e}")
             
             # Delete game from Redis
+            if chat_id is not None and message_id is not None:
+                self.repo.delete_game(chat_id, message_id)
+
+    async def _handle_game_draw(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        engine: CheckersEngine,
+        game_state: dict,
+        chat_id: Optional[int] = None,
+        message_id: Optional[int] = None,
+        inline_message_id: Optional[str] = None,
+        query=None,
+        end_reason: Optional[str] = None,
+    ) -> None:
+        """
+        Handle game end as a draw: save replay, update messages, delete active game.
+
+        In rated mode, rating updates are applied as a draw (0.5/0.5).
+        """
+        board_text = BoardRenderer.render(engine.board)
+        mode = game_state.get("mode", "rated")
+
+        # Game duration
+        from datetime import datetime as dt
+        game_start_time = dt.fromisoformat(
+            game_state.get("game_start_time", game_state.get("created_at", dt.utcnow().isoformat()))
+        )
+        game_end_time = dt.utcnow()
+        game_duration_seconds = int((game_end_time - game_start_time).total_seconds())
+
+        draw_msg = locales.DRAW
+
+        # Rated draw rating update
+        if self.rating_system and mode == "rated":
+            move_count = int(game_state.get("move_count", engine.move_count) or 0)
+
+            blue_id = int(game_state["blue_player_id"])
+            blue_name = game_state["blue_player_name"]
+            yellow_id = int(game_state["yellow_player_id"])
+            yellow_name = game_state["yellow_player_name"]
+
+            # Stable per-game key (same approach as _handle_game_end)
+            if (
+                game_state.get("is_private_match")
+                and game_state.get("challenger_chat_id")
+                and game_state.get("challenger_message_id")
+            ):
+                game_key = f"priv:{game_state['challenger_chat_id']}:{game_state['challenger_message_id']}"
+            elif inline_message_id:
+                game_key = f"inline:{inline_message_id}"
+            else:
+                game_key = f"chat:{chat_id}:{message_id}"
+
+            blue_before = await self.rating_system.get_player(blue_id, blue_name)
+            yellow_before = await self.rating_system.get_player(yellow_id, yellow_name)
+
+            blue_data, yellow_data = await self.rating_system.record_draw(
+                player1_id=blue_id,
+                player1_name=blue_name,
+                player2_id=yellow_id,
+                player2_name=yellow_name,
+                game_key=game_key,
+                move_count=move_count,
+                game_duration=game_duration_seconds,
+            )
+
+            blue_change = int(blue_data.get("rating_change", 0) or 0)
+            yellow_change = int(yellow_data.get("rating_change", 0) or 0)
+
+            blue_rank = get_rank(int(blue_data["rating"]))
+            yellow_rank = get_rank(int(yellow_data["rating"]))
+
+            blue_display = html.escape(blue_name or "Гравець")
+            yellow_display = html.escape(yellow_name or "Гравець")
+
+            draw_msg = "🤝 <b>Нічия!</b>\n\n📊 <b>Рейтинг:</b>\n"
+            draw_msg += (
+                f"🏅 {blue_rank['icon']} {blue_rank['name_uk']} {blue_display}: "
+                f"{int(blue_before['rating']):,} → {int(blue_data['rating']):,} ({blue_change:+d})\n"
+            )
+            draw_msg += (
+                f"🏅 {yellow_rank['icon']} {yellow_rank['name_uk']} {yellow_display}: "
+                f"{int(yellow_before['rating']):,} → {int(yellow_data['rating']):,} ({yellow_change:+d})\n"
+            )
+
+        # Save completed game for replay (schema requires winner fields; use draw sentinel)
+        game_id = str(uuid.uuid4())[:8]
+        completed_game_data = {
+            "game_id": game_id,
+            "blue_player_id": game_state["blue_player_id"],
+            "blue_player_name": game_state["blue_player_name"],
+            "yellow_player_id": game_state["yellow_player_id"],
+            "yellow_player_name": game_state["yellow_player_name"],
+            "winner_id": 0,
+            "winner_name": "Нічия",
+            "winner_color": "draw",
+            "initial_board": game_state.get("initial_board", CheckersEngine.init_board()),
+            "move_history": game_state.get("move_history", []),
+            "final_board": engine.board.copy(),
+            "completed_at": datetime.utcnow().isoformat(),
+        }
+        completed_at = completed_game_data["completed_at"]
+        if self.game_data_repo:
+            try:
+                if self.game_data_repo.save_completed_game(completed_game_data):
+                    if self.game_data_repo.verify_game_saved(game_id):
+                        self.game_data_repo.add_user_game_reference(
+                            game_state["blue_player_id"], game_id, completed_at
+                        )
+                        self.game_data_repo.add_user_game_reference(
+                            game_state["yellow_player_id"], game_id, completed_at
+                        )
+            except Exception as e:
+                logger.error(f"Failed saving completed draw game {game_id}: {type(e).__name__}: {e}", exc_info=True)
+
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("📺 Переглянути гру", callback_data=f"replay_{game_id}_0")]]
+        )
+
+        if end_reason == "threefold":
+            draw_msg = f"{draw_msg}\n(Потрійне повторення позиції)"
+        final_message = f"{board_text}\n\n{draw_msg}"
+
+        # Update messages based on game type (mirror _handle_game_end cleanup paths)
+        if inline_message_id:
+            try:
+                await self._safe_edit_message(
+                    context.bot,
+                    inline_message_id=inline_message_id,
+                    text=final_message,
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML,
+                )
+                self.repo.delete_inline_game(inline_message_id)
+            except RetryAfter as e:
+                logger.warning(f"[_handle_game_draw] Flood control updating inline draw message: {e}")
+                try:
+                    game_state["ended"] = True
+                    game_state["ended_reason"] = end_reason or "draw"
+                    game_state["ended_at"] = datetime.utcnow().isoformat()
+                    self.repo.save_inline_game(inline_message_id, game_state)
+                except Exception:
+                    pass
+                self._schedule_inline_edit_retry(
+                    context,
+                    inline_message_id=inline_message_id,
+                    text=final_message,
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML,
+                    delete_inline_game_after=True,
+                    retry_after_seconds=float(getattr(e, "retry_after", 1.0)),
+                    reason="draw_inline",
+                )
+            except (asyncio.TimeoutError, Exception) as e:
+                logger.warning(f"[_handle_game_draw] Failed to update inline draw message: {e}")
+        elif game_state.get("is_private_match"):
+            try:
+                await self._safe_edit_message(
+                    context.bot,
+                    chat_id=game_state["opponent_chat_id"],
+                    message_id=game_state["opponent_message_id"],
+                    text=final_message,
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML,
+                )
+            except (asyncio.TimeoutError, Exception) as e:
+                logger.warning(f"[_handle_game_draw] Failed to update opponent draw message: {e}")
+
+            try:
+                await self._safe_edit_message(
+                    context.bot,
+                    chat_id=game_state["challenger_chat_id"],
+                    message_id=game_state["challenger_message_id"],
+                    text=final_message,
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML,
+                )
+            except (asyncio.TimeoutError, Exception) as e:
+                logger.warning(f"[_handle_game_draw] Failed to update challenger draw message: {e}")
+
+            self.repo.delete_game(game_state["opponent_chat_id"], game_state["opponent_message_id"])
+            self.repo.delete_game(game_state["challenger_chat_id"], game_state["challenger_message_id"])
+        else:
+            try:
+                if query:
+                    await asyncio.wait_for(
+                        query.edit_message_text(
+                            final_message,
+                            reply_markup=keyboard,
+                            parse_mode=ParseMode.HTML,
+                        ),
+                        timeout=MESSAGE_EDIT_TIMEOUT,
+                    )
+                elif chat_id is not None and message_id is not None:
+                    await self._safe_edit_message(
+                        context.bot,
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text=final_message,
+                        reply_markup=keyboard,
+                        parse_mode=ParseMode.HTML,
+                    )
+            except (asyncio.TimeoutError, Exception) as e:
+                logger.warning(f"[_handle_game_draw] Failed to update regular draw message: {e}")
+
             if chat_id is not None and message_id is not None:
                 self.repo.delete_game(chat_id, message_id)
     

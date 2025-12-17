@@ -98,6 +98,9 @@ class MessageUpdater:
             board_text = BoardRenderer.render(engine.board)
             players_msg = MessageUpdater._get_players_message(game_state)
             turn_msg = MessageUpdater._get_turn_message(game_state)
+            import locales
+            mode = locales.normalize_mode(game_state.get("mode", "casual"))
+            mode_line = f"Режим: <b>{locales.mode_label(mode)}</b>\n<i>{locales.mode_note(mode)}</i>"
             keyboard = BoardRenderer.create_move_keyboard(
                 engine,
                 selected_pos=selected_pos,
@@ -105,7 +108,7 @@ class MessageUpdater:
                 pending_capture=game_state.get("pending_capture")
             )
             
-            message_text = f"{players_msg}\n\n{board_text}\n\n{turn_msg}"
+            message_text = f"{players_msg}\n{mode_line}\n\n{board_text}\n\n{turn_msg}"
             
             # Handle inline messages
             if inline_message_id:

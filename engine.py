@@ -3,7 +3,7 @@ Ukrainian Checkers (Шашки) Game Engine
 Implements Russian/Ukrainian drafts rules on an 8x8 board.
 """
 
-from typing import List, Tuple, Optional, Set
+from typing import List, Tuple, Optional, Set, Sequence
 from dataclasses import dataclass
 
 # Piece constants
@@ -40,6 +40,20 @@ class CheckersEngine:
         self.board: List[int] = self.init_board()
         self.current_turn = YELLOW  # YELLOW starts (opponent moves first)
         self.move_count = 0  # Track total moves made
+
+    @staticmethod
+    def position_key(board: Sequence[int], current_turn: int) -> str:
+        """
+        Compute a stable signature for repetition detection.
+
+        The key is defined by:
+        - board piece placement (64 integers 0-4)
+        - side to move (current_turn)
+
+        This is intentionally deterministic and cheap to compute.
+        """
+        # Pieces are single-digit (0-4), so concatenation is unambiguous.
+        return f"{int(current_turn)}|{''.join(str(int(p)) for p in board)}"
     
     @staticmethod
     def init_board() -> List[int]:
