@@ -105,7 +105,9 @@ class MessageUpdater:
                 engine,
                 selected_pos=selected_pos,
                 move_count=engine.move_count,
-                pending_capture=game_state.get("pending_capture")
+                pending_capture=game_state.get("pending_capture"),
+                draw_offer=game_state.get("draw_offer"),
+                draw_button_min_moves=20,
             )
             
             message_text = f"{players_msg}\n{mode_line}\n\n{board_text}\n\n{turn_msg}"

@@ -396,6 +396,16 @@ class AchievementSystem:
         """Check competitive achievements (leaderboard positions)."""
         ach_id = achievement["achievement_id"]
         req_value = achievement["requirement_value"]
+
+        # These achievements require *historical* leaderboard tracking (time spent in top-10).
+        # We currently do not persist leaderboard history, so checking only the current rank
+        # would unlock them incorrectly. Keep them disabled until proper tracking is added.
+        if ach_id in (
+            "competitive_champion_week",
+            "competitive_master_month",
+            "competitive_legend_year",
+        ):
+            return False
         
         # Get player rank by querying database.
         # In some test fixtures we only create achievements tables (no ratings/players schema),
@@ -417,12 +427,6 @@ class AchievementSystem:
         
         if rank is None:
             return False
-        
-        # For time-based competitive achievements, simplify them
-        if ach_id in ("competitive_champion_week", "competitive_master_month", "competitive_legend_year"):
-            # Redesign: Just check if player is currently in top 10
-            # This is simpler than tracking history
-            return rank <= 10
         
         # For rank-based achievements, check current rank
         if ach_id == "competitive_top_100":

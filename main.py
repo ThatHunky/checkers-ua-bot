@@ -87,7 +87,9 @@ async def check_game_timeouts(context: ContextTypes.DEFAULT_TYPE):
         try:
             last_activity = datetime.fromisoformat(game_state["last_activity"])
         except (ValueError, TypeError) as e:
-            logger.warning(f"Invalid last_activity format for game {chat_id}:{message_id}: {game_state.get('last_activity')}")
+            logger.warning(
+                f"Invalid last_activity format for game {chat_id}:{message_id}: {game_state.get('last_activity')}"
+            )
             continue
         if now - last_activity < timeout_delta:
             continue
@@ -116,7 +118,11 @@ async def check_game_timeouts(context: ContextTypes.DEFAULT_TYPE):
         move_count = int(game_state.get("move_count", 0) or 0)
         if _rating_system and mode == "rated" and move_count > 0:
             try:
-                winner_color = "yellow" if winner_id == game_state.get("yellow_player_id") else "blue"
+                winner_color = (
+                    "yellow"
+                    if winner_id == game_state.get("yellow_player_id")
+                    else "blue"
+                )
                 winner_data, loser_data = await _rating_system.record_game(
                     winner_id,
                     winner_name,
@@ -174,8 +180,13 @@ async def check_game_timeouts(context: ContextTypes.DEFAULT_TYPE):
         # Delete game
         if game_state.get("is_private_match"):
             try:
-                _repository.delete_game(game_state["opponent_chat_id"], game_state["opponent_message_id"])
-                _repository.delete_game(game_state["challenger_chat_id"], game_state["challenger_message_id"])
+                _repository.delete_game(
+                    game_state["opponent_chat_id"], game_state["opponent_message_id"]
+                )
+                _repository.delete_game(
+                    game_state["challenger_chat_id"],
+                    game_state["challenger_message_id"],
+                )
             except Exception:
                 _repository.delete_game(chat_id, message_id)
         else:
@@ -199,7 +210,9 @@ async def check_game_timeouts(context: ContextTypes.DEFAULT_TYPE):
                 f"Inline game {inline_message_id}: {time_since_activity.total_seconds()/60:.1f} mins since activity"
             )
         except (ValueError, TypeError) as e:
-            logger.warning(f"Invalid last_activity format for inline game {inline_message_id}: {game_state.get('last_activity')}")
+            logger.warning(
+                f"Invalid last_activity format for inline game {inline_message_id}: {game_state.get('last_activity')}"
+            )
             continue
 
         if time_since_activity < timeout_delta:
@@ -230,7 +243,11 @@ async def check_game_timeouts(context: ContextTypes.DEFAULT_TYPE):
         if _rating_system and mode == "rated" and move_count > 0:
             try:
                 game_key = f"inline:{inline_message_id}"
-                winner_color = "yellow" if winner_id == game_state.get("yellow_player_id") else "blue"
+                winner_color = (
+                    "yellow"
+                    if winner_id == game_state.get("yellow_player_id")
+                    else "blue"
+                )
                 winner_data, loser_data = await _rating_system.record_game(
                     winner_id,
                     winner_name,
@@ -276,7 +293,7 @@ async def post_init(application: Application):
         logger.info(f"Initializing rating system: {DB_PATH}")
         await rating_system.initialize()
         logger.info("Rating system initialized")
-    
+
     # Get achievement system from bot_data (created in main)
     achievement_system = application.bot_data.get("achievement_system")
     if achievement_system:
@@ -400,7 +417,9 @@ def main():
     application.add_handler(CommandHandler("forfeit", handlers.forfeit_command))
     application.add_handler(CommandHandler("myrating", handlers.myrating_command))
     application.add_handler(CommandHandler("ratings", handlers.ratings_command))
-    application.add_handler(CommandHandler("achievements", handlers.achievements_command))
+    application.add_handler(
+        CommandHandler("achievements", handlers.achievements_command)
+    )
     application.add_handler(CommandHandler("join", handlers.join_command))
     application.add_handler(
         CommandHandler("resetrankings", handlers.reset_rankings_command)
@@ -409,8 +428,17 @@ def main():
         CommandHandler("addlegend", handlers.add_legend_command)
     )  # Hidden arcade mode
     application.add_handler(
+        CommandHandler("blockcheckers", handlers.blockcheckers_command)
+    )  # Hidden admin
+    application.add_handler(
+        CommandHandler("unblockcheckers", handlers.unblockcheckers_command)
+    )  # Hidden admin
+    application.add_handler(
         MessageHandler(
-            filters.Regex("(?i)^/?menu$|^меню$"), handlers.menu_text_handler
+            filters.Regex(
+                "(?i)^/?menu(@\\w+)?$|^[^\\w\\s]*\\s*меню$|^меню$|^[^\\w\\s]*\\s*menu$|^menu$"
+            ),
+            handlers.menu_text_handler,
         )
     )
 
@@ -422,22 +450,34 @@ def main():
 
     # Register callback handlers
     application.add_handler(
-        CallbackQueryHandler(handlers.inline_challenge_join_callback, pattern="^inline_challenge_join$")
+        CallbackQueryHandler(
+            handlers.inline_challenge_join_callback, pattern="^inline_challenge_join$"
+        )
     )
     application.add_handler(
         CallbackQueryHandler(handlers.join_callback, pattern="^join")
     )
     application.add_handler(
-        CallbackQueryHandler(handlers.menu_callback, pattern="^(menu_|play_|invite_|join_code|mm_cancel|back_to_play)")
+        CallbackQueryHandler(
+            handlers.menu_callback,
+            pattern="^(menu_|play_|invite_|join_code|mm_cancel|back_to_play)",
+        )
     )
     application.add_handler(
-        CallbackQueryHandler(handlers.group_invite_mode_callback, pattern="^group_invite_(rated|casual)_\\d+$")
+        CallbackQueryHandler(
+            handlers.group_invite_mode_callback,
+            pattern="^group_invite_(rated|casual)_\\d+$",
+        )
     )
     application.add_handler(
-        CallbackQueryHandler(handlers.group_invite_join_callback, pattern="^group_invite_join_")
+        CallbackQueryHandler(
+            handlers.group_invite_join_callback, pattern="^group_invite_join_"
+        )
     )
     application.add_handler(
-        CallbackQueryHandler(handlers.group_invite_cancel_callback, pattern="^group_invite_cancel_")
+        CallbackQueryHandler(
+            handlers.group_invite_cancel_callback, pattern="^group_invite_cancel_"
+        )
     )
     application.add_handler(
         CallbackQueryHandler(handlers.cancel_invite_callback, pattern="^cancel_invite$")
@@ -448,9 +488,7 @@ def main():
         )
     )
     application.add_handler(
-        CallbackQueryHandler(
-            handlers.accept_inline_callback, pattern="^accept_inline$"
-        )
+        CallbackQueryHandler(handlers.accept_inline_callback, pattern="^accept_inline$")
     )
     application.add_handler(
         CallbackQueryHandler(
@@ -471,10 +509,14 @@ def main():
         CallbackQueryHandler(handlers.abort_forfeit_callback, pattern="^abort_forfeit_")
     )
     application.add_handler(
-        CallbackQueryHandler(handlers.confirm_restart_callback, pattern="^confirm_restart_token_")
+        CallbackQueryHandler(
+            handlers.confirm_restart_callback, pattern="^confirm_restart_token_"
+        )
     )
     application.add_handler(
-        CallbackQueryHandler(handlers.restart_abort_callback, pattern="^restart_abort_token_")
+        CallbackQueryHandler(
+            handlers.restart_abort_callback, pattern="^restart_abort_token_"
+        )
     )
     application.add_handler(
         CallbackQueryHandler(handlers.cancel_abort_callback, pattern="^cancel_abort$")
@@ -484,6 +526,11 @@ def main():
     )
     application.add_handler(
         CallbackQueryHandler(handlers.move_callback, pattern="^move_")
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            handlers.draw_callback, pattern="^draw_(offer|accept|decline)$"
+        )
     )
     application.add_handler(
         CallbackQueryHandler(handlers.back_callback, pattern="^back$")
@@ -507,19 +554,23 @@ def main():
         CallbackQueryHandler(handlers.ratings_page_callback, pattern="^ratings_page_")
     )
     application.add_handler(
-        CallbackQueryHandler(handlers.achievement_category_callback, pattern="^ach_category_")
+        CallbackQueryHandler(
+            handlers.achievement_category_callback, pattern="^ach_category_"
+        )
     )
     application.add_handler(
         CallbackQueryHandler(handlers.achievement_back_callback, pattern="^ach_back")
     )
-    
+
     # Debug: catch-all callback handler to log all callbacks (must be last)
-    async def debug_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def debug_callback_handler(
+        update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
         """Debug handler to catch unmatched callbacks."""
         query = update.callback_query
         if query:
             await query.answer("❌ Callback не розпізнано", show_alert=True)
-    
+
     application.add_handler(CallbackQueryHandler(debug_callback_handler))
 
     # Start in appropriate mode

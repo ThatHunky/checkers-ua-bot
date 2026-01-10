@@ -169,6 +169,20 @@ class GameHandlers:
             # Give up silently; message may be uneditable (e.g., too old) or other permanent error.
             return
 
+    async def _is_user_blocked(self, user_id: int) -> bool:
+        """
+        Check if a user is blocked.
+        
+        Args:
+            user_id: Telegram user ID to check
+        
+        Returns:
+            True if user is blocked, False otherwise
+        """
+        if not self.rating_system:
+            return False
+        return await self.rating_system.is_user_blocked(user_id)
+    
     @staticmethod
     def _pos_to_human(pos: int) -> str:
         """Convert board index to human-readable coordinates (e.g., A8)."""
@@ -182,10 +196,17 @@ class GameHandlers:
 
     async def start_bot_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start - show the main menu in private chat."""
+        user = update.effective_user
+        if user and await self._is_user_blocked(user.id):
+            return
         await self.menu_command(update, context)
 
     async def menu_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show the main menu (private chats only)."""
+        user = update.effective_user
+        if user and await self._is_user_blocked(user.id):
+            return
+        
         chat = update.effective_chat
         message = update.effective_message
 
@@ -197,20 +218,33 @@ class GameHandlers:
 
     async def menu_text_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle text-based menu triggers in the same way as the /menu command."""
+        user = update.effective_user
+        if user and await self._is_user_blocked(user.id):
+            return
+        
         message = update.effective_message
-        text = (message.text or "").strip().lower() if message else ""
+        text = (message.text or "").strip() if message else ""
 
         triggers = {"/menu", "menu", "меню"}
 
         # Recognize bot-mention variants like /menu@YourBotName
-        if text.startswith("/menu@"):
+        if text.lower().startswith("/menu@"):
             return await self.menu_command(update, context)
 
-        if text in triggers:
+        # Normalize text: strip leading non-word characters (emoji, punctuation, whitespace)
+        # This handles cases like "📋 Меню" -> "меню"
+        import re
+        normalized = re.sub(r'^[^\w\s]*\s*', '', text, count=1).lower()
+        
+        if normalized in triggers or text.lower() in triggers:
             return await self.menu_command(update, context)
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Entry point for /checkersplay - show play modes."""
+        user = update.effective_user
+        if user and await self._is_user_blocked(user.id):
+            return
+        
         chat = update.effective_chat
         message = update.effective_message
 
@@ -281,7 +315,7 @@ class GameHandlers:
 
         # Render initial board
         board_text = BoardRenderer.render(board_state)
-        keyboard = BoardRenderer.create_move_keyboard(engine, move_count=0)
+        keyboard = BoardRenderer.create_move_keyboard(engine, move_count=0, draw_offer=game_state.get("draw_offer"))
         
         blue_name = html.escape(game_state["blue_player_name"])
         yellow_name = html.escape(game_state["yellow_player_name"])
@@ -342,8 +376,11 @@ class GameHandlers:
 
     async def replay_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show a paginated list of completed games for the user."""
-        message = update.effective_message
         user = update.effective_user
+        if user and await self._is_user_blocked(user.id):
+            return
+        
+        message = update.effective_message
 
         if not self.game_data_repo:
             await message.reply_text("📺 Історія ігор тимчасово недоступна.")
@@ -526,6 +563,9 @@ class GameHandlers:
     ) -> None:
         """Handle replay list page navigation (author-only)."""
         query = update.callback_query
+        if query and query.from_user:
+            if await self._is_user_blocked(query.from_user.id):
+                return
         if not query:
             return
 
@@ -560,9 +600,12 @@ class GameHandlers:
         """Handle inline queries for creating game challenges."""
 
         query = update.inline_query
+        user = query.from_user
+        if user and await self._is_user_blocked(user.id):
+            return
+        
         raw_query = (query.query or "").strip()
         query_text = raw_query.lower()
-        user = query.from_user
 
         # If the inline query is empty or "play"/"start", show challenge options for different modes
         if not query_text or query_text in ("play", "start", "гра", "почати"):
@@ -713,9 +756,12 @@ class GameHandlers:
         """Handle selection of inline results - create challenge when challenge option is selected."""
 
         result = update.chosen_inline_result
+        user = result.from_user
+        if user and await self._is_user_blocked(user.id):
+            return
+        
         result_id = result.result_id
         inline_message_id = result.inline_message_id
-        user = result.from_user
 
         logger.info("Inline result chosen: result_id=%s, inline_message_id=%s, user=%s", 
                    result_id, inline_message_id, user.id)
@@ -770,6 +816,10 @@ class GameHandlers:
 
     async def join_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Join an invite by code (if created via the menu)."""
+        user = update.effective_user
+        if user and await self._is_user_blocked(user.id):
+            return
+        
         message = update.effective_message
         args = context.args or []
         if not args:
@@ -844,6 +894,10 @@ class GameHandlers:
 
     async def replay_game_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Render a saved game's move-by-move replay."""
+        query = update.callback_query
+        if query and query.from_user:
+            if await self._is_user_blocked(query.from_user.id):
+                return
 
         query = update.callback_query
         if not query:
@@ -976,6 +1030,9 @@ class GameHandlers:
           - review_{step:int}      -> show board for that step (board_before for move index)
         """
         query = update.callback_query
+        if query and query.from_user:
+            if await self._is_user_blocked(query.from_user.id):
+                return
         if not query:
             return
 
@@ -1011,6 +1068,8 @@ class GameHandlers:
                     selected_pos=None,
                     move_count=engine.move_count,
                     pending_capture=game_state.get("pending_capture"),
+                    draw_offer=game_state.get("draw_offer"),
+                    draw_button_min_moves=20,
                 )
                 message_text = f"{players_msg}\n\n{board_text}\n\n{turn_msg}"
 
@@ -1156,6 +1215,10 @@ class GameHandlers:
     async def menu_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle menu navigation callbacks."""
         query = update.callback_query
+        user_id = query.from_user.id
+        if await self._is_user_blocked(user_id):
+            return
+        
         await query.answer()
 
         data = query.data
@@ -1169,9 +1232,23 @@ class GameHandlers:
         elif data == MENU_RATING:
             await self.ratings_command(update, context)
         elif data == MENU_HELP:
-            await query.message.edit_text(locales.HELP_TEXT, parse_mode="HTML")
+            back_to_menu_kb = InlineKeyboardMarkup(
+                [[InlineKeyboardButton(locales.BTN_BACK_TO_MENU, callback_data=MENU_MAIN)]]
+            )
+            await query.message.edit_text(
+                locales.HELP_TEXT,
+                parse_mode=ParseMode.HTML,
+                reply_markup=back_to_menu_kb,
+            )
         elif data == MENU_ABOUT:
-            await query.message.edit_text(locales.ABOUT_TEXT)
+            back_to_menu_kb = InlineKeyboardMarkup(
+                [[InlineKeyboardButton(locales.BTN_BACK_TO_MENU, callback_data=MENU_MAIN)]]
+            )
+            await query.message.edit_text(
+                locales.ABOUT_TEXT,
+                parse_mode=ParseMode.HTML,
+                reply_markup=back_to_menu_kb,
+            )
         elif data in {PLAY_RATED, PLAY_CASUAL}:
             mode = "rated" if data == PLAY_RATED else "casual"
             if await self._maybe_confirm_restart_from_query(
@@ -1232,6 +1309,9 @@ class GameHandlers:
     async def inline_challenge_join_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle joining an inline challenge and start a game."""
         query = update.callback_query
+        user_id = query.from_user.id
+        if await self._is_user_blocked(user_id):
+            return
         
         try:
             logger.info(
@@ -1430,11 +1510,18 @@ class GameHandlers:
     async def join_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle legacy join callbacks (fallback)."""
         query = update.callback_query
+        user_id = query.from_user.id
+        if await self._is_user_blocked(user_id):
+            return
+        
         await query.answer("Приєднання через кнопки більше не використовується. Спробуйте `/join`")
 
     async def cancel_invite_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Cancel an invite from inline button."""
         query = update.callback_query
+        if query and query.from_user:
+            if await self._is_user_blocked(query.from_user.id):
+                return
         await query.answer()
         self.matchmaking.cancel(query.from_user.id)
         await query.message.edit_text("Запрошення скасовано.")
@@ -1442,11 +1529,17 @@ class GameHandlers:
     async def accept_private_invite_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Placeholder handler for accepting invites from inline keyboard."""
         query = update.callback_query
+        if query and query.from_user:
+            if await self._is_user_blocked(query.from_user.id):
+                return
         await query.answer("Використайте `/join` з кодом, щоб приєднатися.")
 
     async def accept_inline_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle accepting an inline challenge when a user clicks accept_inline button."""
         query = update.callback_query
+        if query and query.from_user:
+            if await self._is_user_blocked(query.from_user.id):
+                return
         
         try:
             if not query:
@@ -1611,6 +1704,9 @@ class GameHandlers:
     async def decline_private_invite_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle declining an invite from inline keyboard in private chats."""
         query = update.callback_query
+        if query and query.from_user:
+            if await self._is_user_blocked(query.from_user.id):
+                return
         await query.answer()
 
         self.matchmaking.cancel(query.from_user.id)
@@ -1715,6 +1811,9 @@ class GameHandlers:
     async def group_invite_mode_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Create a group invite (rated or casual) from the group selector."""
         query = update.callback_query
+        if query and query.from_user:
+            if await self._is_user_blocked(query.from_user.id):
+                return
         await query.answer()
 
         parts = query.data.split("_")
@@ -1792,6 +1891,9 @@ class GameHandlers:
     async def group_invite_join_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Accept a group invite and start a group game."""
         query = update.callback_query
+        if query and query.from_user:
+            if await self._is_user_blocked(query.from_user.id):
+                return
         await query.answer()
 
         data = query.data.replace("group_invite_join_", "", 1)
@@ -1905,6 +2007,9 @@ class GameHandlers:
     async def group_invite_cancel_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Cancel an open group invite (creator only)."""
         query = update.callback_query
+        if query and query.from_user:
+            if await self._is_user_blocked(query.from_user.id):
+                return
         await query.answer()
 
         data = query.data.replace("group_invite_cancel_", "", 1)
@@ -2180,6 +2285,8 @@ class GameHandlers:
         """Abort restart confirmation."""
         query = update.callback_query
         user = query.from_user
+        if user and await self._is_user_blocked(user.id):
+            return
         token = (query.data or "").replace("restart_abort_token_", "", 1)
         payload = self.repo.get_confirm_token(token) or {}
 
@@ -2208,6 +2315,8 @@ class GameHandlers:
         """Confirm restart: forfeit/cancel active game, then proceed with intended action."""
         query = update.callback_query
         user = query.from_user
+        if user and await self._is_user_blocked(user.id):
+            return
         token = (query.data or "").replace("confirm_restart_token_", "", 1)
         payload = self.repo.get_confirm_token(token) or {}
 
@@ -2440,8 +2549,11 @@ class GameHandlers:
     async def select_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle piece selection and show available moves."""
         query = update.callback_query
-        start_time = time.time()
         user_id = query.from_user.id
+        if await self._is_user_blocked(user_id):
+            return
+        
+        start_time = time.time()
         callback_id = f"{query.id}_{user_id}"
         
         # Check for duplicate callbacks
@@ -2523,22 +2635,6 @@ class GameHandlers:
                 game_state["position_counts"] = counts
                 game_state["position_counts_backfilled"] = True
 
-                # If threefold repetition already occurred earlier in the game, end as a draw now.
-                # This can happen for games that started before tracking was enabled.
-                if counts and max(counts.values()) >= 3:
-                    await query.answer()
-                    await self._handle_game_draw(
-                        context=context,
-                        engine=engine,
-                        game_state=game_state,
-                        chat_id=chat_id,
-                        message_id=message_id,
-                        inline_message_id=inline_message_id,
-                        query=query,
-                        end_reason="threefold",
-                    )
-                    return
-
             if not self._validate_player_turn(user_id, game_state):
                 await query.answer(locales.ERROR_NOT_YOUR_TURN, show_alert=True)
                 return
@@ -2562,10 +2658,10 @@ class GameHandlers:
                 await query.answer("❌ Ви не можете рухати фігуру суперника!", show_alert=True)
                 return
 
-            if pending_capture:
-                legal_moves = engine.find_single_hop_captures(from_pos)
+            if pending_capture and pending_capture.get("must_continue"):
+                legal_moves = engine.get_legal_single_hop_moves(pending_pos=from_pos)
             else:
-                legal_moves = [m for m in engine.get_legal_moves(engine.current_turn) if m.from_pos == from_pos]
+                legal_moves = [m for m in engine.get_legal_single_hop_moves() if m.from_pos == from_pos]
 
             # (debug log removed)
 
@@ -2603,8 +2699,11 @@ class GameHandlers:
     async def move_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle executing a move selection."""
         query = update.callback_query
-        start_time = time.time()
         user_id = query.from_user.id
+        if await self._is_user_blocked(user_id):
+            return
+        
+        start_time = time.time()
         callback_id = f"{query.id}_{user_id}"
         
         # Check for duplicate callbacks
@@ -2669,19 +2768,15 @@ class GameHandlers:
                 return
 
             # Build legal move list consistent with capture UI (single-hop when captures exist)
-            if pending_capture:
-                legal_moves = engine.find_single_hop_captures(pending_capture["pos"])
+            if pending_capture and pending_capture.get("must_continue"):
+                legal_moves = engine.get_legal_single_hop_moves(pending_pos=pending_capture["pos"])
+                legal_moves = [m for m in legal_moves if m.from_pos == from_pos]
             else:
-                all_moves = engine.get_legal_moves(engine.current_turn)
-                capture_positions = {m.from_pos for m in all_moves if m.captures}
-                if capture_positions:
-                    # Must capture; restrict to single-hop captures from this piece
-                    if from_pos not in capture_positions:
-                        await query.answer(locales.ERROR_INVALID_MOVE, show_alert=True)
-                        return
-                    legal_moves = engine.find_single_hop_captures(from_pos)
-                else:
-                    legal_moves = [m for m in all_moves if m.from_pos == from_pos]
+                legal_moves = engine.get_legal_single_hop_moves()
+                if from_pos not in {m.from_pos for m in legal_moves}:
+                    await query.answer(locales.ERROR_INVALID_MOVE, show_alert=True)
+                    return
+                legal_moves = [m for m in legal_moves if m.from_pos == from_pos]
             move_to_apply = None
 
             # (debug log removed)
@@ -2721,6 +2816,10 @@ class GameHandlers:
             # Apply move
             previous_turn = engine.current_turn
             engine.apply_move(move_to_apply)
+
+            # Clear any pending draw offer once a move is made (offer is withdrawn/declined by play).
+            if game_state.get("draw_offer"):
+                game_state["draw_offer"] = None
             
             # Track statistics
             captures_in_move = len(move_to_apply.captures) if move_to_apply.captures else 0
@@ -2767,7 +2866,8 @@ class GameHandlers:
                     query=query
                 )
             else:
-                # Threefold repetition draw detection (only after a stable turn; ignore forced continuation mid-capture).
+                # Threefold repetition tracking (non-terminal). We keep counts for potential analytics/UX,
+                # but the game no longer auto-ends as a draw.
                 if not must_continue:
                     pos_key = CheckersEngine.position_key(engine.board, engine.current_turn)
                     counts = game_state.get("position_counts")
@@ -2775,18 +2875,6 @@ class GameHandlers:
                         counts = {}
                         game_state["position_counts"] = counts
                     counts[pos_key] = int(counts.get(pos_key, 0) or 0) + 1
-                    if counts[pos_key] >= 3:
-                        await self._handle_game_draw(
-                            context=context,
-                            engine=engine,
-                            game_state=game_state,
-                            chat_id=chat_id,
-                            message_id=message_id,
-                            inline_message_id=inline_message_id,
-                            query=query,
-                            end_reason="threefold",
-                        )
-                        return
 
                 # Game continues - update state
                 game_state["board"] = engine.board
@@ -2846,6 +2934,9 @@ class GameHandlers:
     async def back_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle back button - return to piece selection."""
         query = update.callback_query
+        if query and query.from_user:
+            if await self._is_user_blocked(query.from_user.id):
+                return
         start_time = time.time()
         user_id = query.from_user.id
         callback_id = f"{query.id}_{user_id}"
@@ -2921,6 +3012,9 @@ class GameHandlers:
     async def forfeit_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle forfeit/cancel button."""
         query = update.callback_query
+        if query and query.from_user:
+            if await self._is_user_blocked(query.from_user.id):
+                return
         start_time = time.time()
         user_id = query.from_user.id
         callback_id = f"{query.id}_{user_id}"
@@ -3167,10 +3261,257 @@ class GameHandlers:
             logger.exception(f"[forfeit_callback] Error: user={user_id}, error={e}")
             await query.answer("❌ Сталася помилка. Спробуйте ще раз.", show_alert=True)
 
+    async def draw_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Router for manual draw actions.
+
+        Callback data:
+          - draw_offer
+          - draw_accept
+          - draw_decline
+        """
+        query = update.callback_query
+        if query and query.from_user:
+            if await self._is_user_blocked(query.from_user.id):
+                return
+        if not query:
+            return
+        data = (query.data or "").strip()
+        if data == "draw_offer":
+            return await self.draw_offer_callback(update, context)
+        if data == "draw_accept":
+            return await self.draw_accept_callback(update, context)
+        if data == "draw_decline":
+            return await self.draw_decline_callback(update, context)
+        await query.answer()
+
+    @staticmethod
+    def _draw_min_moves() -> int:
+        # move_count counts plies (each player's move). Default: 20 plies ~= 10 moves each.
+        return 20
+
+    def _save_active_game_state(
+        self,
+        game_state: dict,
+        chat_id: Optional[int] = None,
+        message_id: Optional[int] = None,
+        inline_message_id: Optional[str] = None,
+    ) -> None:
+        """Persist active game state in Redis for all variants (inline / regular / private match)."""
+        if inline_message_id:
+            self.repo.save_inline_game(inline_message_id, game_state)
+            return
+        if game_state.get("is_private_match"):
+            try:
+                self.repo.save_game(
+                    game_state["challenger_chat_id"],
+                    game_state["challenger_message_id"],
+                    game_state,
+                )
+                self.repo.save_game(
+                    game_state["opponent_chat_id"],
+                    game_state["opponent_message_id"],
+                    game_state,
+                )
+            except Exception:
+                # Best-effort; fall back to the message where the callback originated.
+                if chat_id is not None and message_id is not None:
+                    self.repo.save_game(chat_id, message_id, game_state)
+            return
+        if chat_id is not None and message_id is not None:
+            self.repo.save_game(chat_id, message_id, game_state)
+
+    async def draw_offer_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Offer a draw (manual, opponent must accept)."""
+        query = update.callback_query
+        user_id = query.from_user.id
+        if await self._is_user_blocked(user_id):
+            return
+        
+        start_time = time.time()
+        callback_id = f"{query.id}_{user_id}"
+
+        if self._is_duplicate_callback(callback_id):
+            await query.answer("⏳ Обробка попереднього запиту...", show_alert=False)
+            return
+
+        try:
+            game_state, chat_id, message_id, inline_message_id = self._get_game_state_from_query(query)
+            if not game_state:
+                await query.answer(locales.ERROR_NO_GAME, show_alert=True)
+                return
+            if game_state.get("ended"):
+                await query.answer("⏳ Гра вже завершена.", show_alert=True)
+                return
+            if not self._validate_player_in_game(user_id, game_state):
+                await query.answer("❌ Ви не є гравцем у цій грі!", show_alert=True)
+                return
+
+            move_count = int(game_state.get("move_count", 0) or 0)
+            if move_count < self._draw_min_moves():
+                await query.answer("⏳ Запропонувати нічию можна трохи пізніше.", show_alert=True)
+                return
+
+            existing = game_state.get("draw_offer")
+            if isinstance(existing, dict) and existing.get("by_user_id"):
+                if int(existing.get("by_user_id")) == int(user_id):
+                    await query.answer("🤝 Ви вже запропонували нічию.", show_alert=True)
+                else:
+                    await query.answer("🤝 Нічия вже запропонована суперником.", show_alert=True)
+                return
+
+            game_state["draw_offer"] = {"by_user_id": int(user_id), "created_at": datetime.utcnow().isoformat()}
+            game_state["last_activity"] = datetime.utcnow().isoformat()
+            self._save_active_game_state(game_state, chat_id=chat_id, message_id=message_id, inline_message_id=inline_message_id)
+
+            engine = CheckersEngine()
+            engine.set_board_state(
+                {
+                    "board": game_state["board"],
+                    "current_turn": game_state["current_turn"],
+                    "move_count": move_count,
+                }
+            )
+
+            await query.answer("🤝 Нічия запропонована", show_alert=False)
+            if inline_message_id:
+                await self._update_inline_game_message(context.bot, inline_message_id, engine, game_state)
+            else:
+                await self._update_game_message(query.message, engine, game_state, context)
+
+            logger.debug(f"[draw_offer_callback] Completed in {(time.time()-start_time)*1000:.2f}ms")
+        except Exception as e:
+            logger.exception(f"[draw_offer_callback] Error: user={user_id}, error={e}")
+            await query.answer("❌ Сталася помилка. Спробуйте ще раз.", show_alert=True)
+
+    async def draw_accept_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Accept a pending draw offer and end the game as a draw."""
+        query = update.callback_query
+        user_id = query.from_user.id
+        if await self._is_user_blocked(user_id):
+            return
+        
+        start_time = time.time()
+        callback_id = f"{query.id}_{user_id}"
+
+        if self._is_duplicate_callback(callback_id):
+            await query.answer("⏳ Обробка попереднього запиту...", show_alert=False)
+            return
+
+        try:
+            game_state, chat_id, message_id, inline_message_id = self._get_game_state_from_query(query)
+            if not game_state:
+                await query.answer(locales.ERROR_NO_GAME, show_alert=True)
+                return
+            if game_state.get("ended"):
+                await query.answer("⏳ Гра вже завершена.", show_alert=True)
+                return
+            if not self._validate_player_in_game(user_id, game_state):
+                await query.answer("❌ Ви не є гравцем у цій грі!", show_alert=True)
+                return
+
+            offer = game_state.get("draw_offer")
+            if not (isinstance(offer, dict) and offer.get("by_user_id")):
+                await query.answer("🤝 Немає активної пропозиції нічиєї.", show_alert=True)
+                return
+
+            offerer_id = int(offer.get("by_user_id", 0) or 0)
+            if offerer_id == int(user_id):
+                await query.answer("⏳ Очікуємо відповідь суперника.", show_alert=True)
+                return
+
+            engine = CheckersEngine()
+            engine.set_board_state(
+                {
+                    "board": game_state["board"],
+                    "current_turn": game_state["current_turn"],
+                    "move_count": int(game_state.get("move_count", 0) or 0),
+                }
+            )
+
+            await query.answer()
+            await self._handle_game_draw(
+                context=context,
+                engine=engine,
+                game_state=game_state,
+                chat_id=chat_id,
+                message_id=message_id,
+                inline_message_id=inline_message_id,
+                query=query,
+                end_reason="manual",
+            )
+            logger.debug(f"[draw_accept_callback] Completed in {(time.time()-start_time)*1000:.2f}ms")
+        except Exception as e:
+            logger.exception(f"[draw_accept_callback] Error: user={user_id}, error={e}")
+            await query.answer("❌ Сталася помилка. Спробуйте ще раз.", show_alert=True)
+
+    async def draw_decline_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Decline a draw offer (or cancel your own offer) and restore normal play."""
+        query = update.callback_query
+        user_id = query.from_user.id
+        if await self._is_user_blocked(user_id):
+            return
+        
+        start_time = time.time()
+        callback_id = f"{query.id}_{user_id}"
+
+        if self._is_duplicate_callback(callback_id):
+            await query.answer("⏳ Обробка попереднього запиту...", show_alert=False)
+            return
+
+        try:
+            game_state, chat_id, message_id, inline_message_id = self._get_game_state_from_query(query)
+            if not game_state:
+                await query.answer(locales.ERROR_NO_GAME, show_alert=True)
+                return
+            if game_state.get("ended"):
+                await query.answer("⏳ Гра вже завершена.", show_alert=True)
+                return
+            if not self._validate_player_in_game(user_id, game_state):
+                await query.answer("❌ Ви не є гравцем у цій грі!", show_alert=True)
+                return
+
+            offer = game_state.get("draw_offer")
+            if not (isinstance(offer, dict) and offer.get("by_user_id")):
+                await query.answer("🤝 Немає активної пропозиції нічиєї.", show_alert=True)
+                return
+
+            offerer_id = int(offer.get("by_user_id", 0) or 0)
+            if int(user_id) == offerer_id:
+                msg = "🚫 Пропозицію нічиєї скасовано"
+            else:
+                msg = "❌ Нічию відхилено"
+
+            game_state["draw_offer"] = None
+            game_state["last_activity"] = datetime.utcnow().isoformat()
+            self._save_active_game_state(game_state, chat_id=chat_id, message_id=message_id, inline_message_id=inline_message_id)
+
+            engine = CheckersEngine()
+            engine.set_board_state(
+                {
+                    "board": game_state["board"],
+                    "current_turn": game_state["current_turn"],
+                    "move_count": int(game_state.get("move_count", 0) or 0),
+                }
+            )
+
+            await query.answer(msg, show_alert=False)
+            if inline_message_id:
+                await self._update_inline_game_message(context.bot, inline_message_id, engine, game_state)
+            else:
+                await self._update_game_message(query.message, engine, game_state, context)
+
+            logger.debug(f"[draw_decline_callback] Completed in {(time.time()-start_time)*1000:.2f}ms")
+        except Exception as e:
+            logger.exception(f"[draw_decline_callback] Error: user={user_id}, error={e}")
+            await query.answer("❌ Сталася помилка. Спробуйте ще раз.", show_alert=True)
+
     async def abort_forfeit_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Abort an in-board forfeit confirmation and restore the board UI."""
         query = update.callback_query
         user = query.from_user
+        if user and await self._is_user_blocked(user.id):
+            return
         data = query.data or ""
 
         try:
@@ -3246,11 +3587,17 @@ class GameHandlers:
     async def new_game_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle new game button - just show welcome message."""
         query = update.callback_query
+        if query and query.from_user:
+            if await self._is_user_blocked(query.from_user.id):
+                return
         await query.answer("Використайте `/checkersplay` для нової гри")
     
     async def cancel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /cancel command - cancel current game (only before moves)."""
         user = update.effective_user
+        if user and await self._is_user_blocked(user.id):
+            return
+        
         chat = update.effective_chat
         
         # Only works in private chat
@@ -3301,6 +3648,9 @@ class GameHandlers:
     async def forfeit_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /forfeit command - forfeit current game."""
         user = update.effective_user
+        if user and await self._is_user_blocked(user.id):
+            return
+        
         chat = update.effective_chat
         
         # Only works in private chat
@@ -3350,6 +3700,9 @@ class GameHandlers:
     async def confirm_cancel_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle confirmation of game cancellation."""
         query = update.callback_query
+        if query and query.from_user:
+            if await self._is_user_blocked(query.from_user.id):
+                return
         user = query.from_user
         
         # Parse callback data: confirm_cancel_{chat_id}_{message_id}
@@ -3432,6 +3785,9 @@ class GameHandlers:
     async def confirm_forfeit_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle confirmation of forfeit."""
         query = update.callback_query
+        if query and query.from_user:
+            if await self._is_user_blocked(query.from_user.id):
+                return
         user = query.from_user
 
         data = query.data or ""
@@ -3551,6 +3907,9 @@ class GameHandlers:
     async def cancel_abort_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle aborting cancel/forfeit confirmation."""
         query = update.callback_query
+        if query and query.from_user:
+            if await self._is_user_blocked(query.from_user.id):
+                return
         await query.answer("Дію скасовано")
         await query.edit_message_text("✅ Гра продовжується.")
     
@@ -3588,9 +3947,134 @@ class GameHandlers:
             f"📊 Всі гравці почнуть з {1200} ELO."
         )
     
+    async def blockcheckers_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Hidden admin command to block a user. Only works in private chat for admin."""
+        user = update.effective_user
+        chat = update.effective_chat
+        
+        # Check if private chat
+        if chat.type != "private":
+            return  # Silently ignore in group chats
+        
+        # Check if admin
+        admin_id_str = os.getenv("ADMIN_ID", "")
+        if not admin_id_str:
+            return  # No admin configured
+        
+        try:
+            admin_id = int(admin_id_str)
+        except ValueError:
+            return  # Invalid admin ID
+        
+        if user.id != admin_id:
+            return  # Not admin, silently ignore
+        
+        # Admin confirmed - block user
+        if not self.rating_system:
+            await update.message.reply_text("❌ Система рейтингу не налаштована.")
+            return
+        
+        if not context.args or len(context.args) == 0:
+            await update.message.reply_text("❌ Вкажіть ID користувача або username.")
+            return
+        
+        arg = context.args[0].strip()
+        target_user_id = None
+        
+        # Try to parse as user ID (numeric)
+        try:
+            target_user_id = int(arg)
+        except ValueError:
+            # Try to parse as username (with or without @)
+            username = arg.lstrip("@")
+            user_data = self.repo.get_user_by_username(username)
+            if user_data:
+                target_user_id = user_data.get("user_id")
+            else:
+                await update.message.reply_text(f"❌ Користувача з username '{arg}' не знайдено.")
+                return
+        
+        if target_user_id is None:
+            await update.message.reply_text("❌ Не вдалося визначити ID користувача.")
+            return
+        
+        # Block the user
+        success = await self.rating_system.block_user(target_user_id)
+        if success:
+            await update.message.reply_text(
+                f"✅ Success\n\n👤 [User](tg://user?id={target_user_id})",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text("❌ Помилка при блокуванні користувача.")
+    
+    async def unblockcheckers_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Hidden admin command to unblock a user. Only works in private chat for admin."""
+        user = update.effective_user
+        chat = update.effective_chat
+        
+        # Check if private chat
+        if chat.type != "private":
+            return  # Silently ignore in group chats
+        
+        # Check if admin
+        admin_id_str = os.getenv("ADMIN_ID", "")
+        if not admin_id_str:
+            return  # No admin configured
+        
+        try:
+            admin_id = int(admin_id_str)
+        except ValueError:
+            return  # Invalid admin ID
+        
+        if user.id != admin_id:
+            return  # Not admin, silently ignore
+        
+        # Admin confirmed - unblock user
+        if not self.rating_system:
+            await update.message.reply_text("❌ Система рейтингу не налаштована.")
+            return
+        
+        if not context.args or len(context.args) == 0:
+            await update.message.reply_text("❌ Вкажіть ID користувача або username.")
+            return
+        
+        arg = context.args[0].strip()
+        target_user_id = None
+        
+        # Try to parse as user ID (numeric)
+        try:
+            target_user_id = int(arg)
+        except ValueError:
+            # Try to parse as username (with or without @)
+            username = arg.lstrip("@")
+            user_data = self.repo.get_user_by_username(username)
+            if user_data:
+                target_user_id = user_data.get("user_id")
+            else:
+                await update.message.reply_text(f"❌ Користувача з username '{arg}' не знайдено.")
+                return
+        
+        if target_user_id is None:
+            await update.message.reply_text("❌ Не вдалося визначити ID користувача.")
+            return
+        
+        # Unblock the user
+        success = await self.rating_system.unblock_user(target_user_id)
+        if success:
+            await update.message.reply_text(
+                f"✅ Success\n\n👤 [User](tg://user?id={target_user_id})",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text("❌ Користувач не був заблокований або сталася помилка.")
+    
     async def achievements_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show player achievements overview."""
         user = update.effective_user
+        if user and await self._is_user_blocked(user.id):
+            return
+        
         chat = update.effective_chat
         
         if not self.achievement_system:
@@ -3673,6 +4157,9 @@ class GameHandlers:
     async def achievement_category_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show achievements in a specific category."""
         query = update.callback_query
+        if query and query.from_user:
+            if await self._is_user_blocked(query.from_user.id):
+                return
         await query.answer()
         
         user = query.from_user
@@ -3762,6 +4249,9 @@ class GameHandlers:
     async def achievement_back_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Return to achievements overview."""
         query = update.callback_query
+        if query and query.from_user:
+            if await self._is_user_blocked(query.from_user.id):
+                return
         await query.answer()
         
         user = query.from_user
@@ -4334,7 +4824,8 @@ class GameHandlers:
                     await asyncio.wait_for(
                         query.edit_message_text(
                             final_message,
-                            reply_markup=keyboard
+                            reply_markup=keyboard,
+                            parse_mode=ParseMode.HTML,
                         ),
                         timeout=MESSAGE_EDIT_TIMEOUT
                     )
@@ -4344,7 +4835,8 @@ class GameHandlers:
                         chat_id=chat_id,
                         message_id=message_id,
                         text=final_message,
-                        reply_markup=keyboard
+                        reply_markup=keyboard,
+                        parse_mode=ParseMode.HTML,
                     )
             except (asyncio.TimeoutError, Exception) as e:
                 logger.warning(f"[_handle_game_end] Failed to update regular game over message: {e}")
@@ -4581,6 +5073,9 @@ class GameHandlers:
     async def noop_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle noop (no-operation) callbacks from non-interactive squares."""
         query = update.callback_query
+        if query and query.from_user:
+            if await self._is_user_blocked(query.from_user.id):
+                return
         data = query.data or ""
 
         # If the continuation banner is tapped, remind the player to continue capturing
@@ -4626,7 +5121,11 @@ class GameHandlers:
             return
 
         legal_moves = engine.get_legal_moves(engine.current_turn)
-        capture_positions = {move.from_pos for move in legal_moves if move.captures}
+        # Single-hop, best-line filtered list for UX messaging.
+        legal_single = engine.get_legal_single_hop_moves(
+            pending_pos=(pending_capture.get("pos") if pending_capture else None)
+        )
+        capture_positions = {move.from_pos for move in legal_single if move.captures}
 
         if capture_positions and tapped_pos not in capture_positions:
             await query.answer("🎯 Доступний удар! Оберіть фігуру, що може бити.", show_alert=True)
@@ -4636,16 +5135,46 @@ class GameHandlers:
         await query.answer()
     
     async def myrating_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /myrating command - show user's rating with enhanced statistics."""
+        """Handle /myrating command - show user rating with enhanced statistics."""
+        user = update.effective_user
+        if user and await self._is_user_blocked(user.id):
+            return
+        
+        query = update.callback_query
+        target_message = update.message or update.effective_message or (query.message if query else None)
+        edit = bool(query)
+
+        back_to_menu_kb = InlineKeyboardMarkup(
+            [[InlineKeyboardButton(locales.BTN_BACK_TO_MENU, callback_data=MENU_MAIN)]]
+        )
+
         if not self.rating_system:
-            await update.message.reply_text("Система рейтингу недоступна.")
+            if edit and hasattr(target_message, "edit_text"):
+                await target_message.edit_text(
+                    "Система рейтингу недоступна.", reply_markup=back_to_menu_kb
+                )
+            elif hasattr(target_message, "reply_text"):
+                await target_message.reply_text(
+                    "Система рейтингу недоступна.", reply_markup=back_to_menu_kb
+                )
             return
         
         user = update.effective_user
         player_data = await self.rating_system.get_player(user.id, user.first_name)
         
         if player_data["games_played"] == 0:
-            await update.message.reply_text(locales.NO_GAMES_PLAYED, parse_mode="HTML")
+            if edit and hasattr(target_message, "edit_text"):
+                await target_message.edit_text(
+                    locales.NO_GAMES_PLAYED,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=back_to_menu_kb,
+                )
+            elif hasattr(target_message, "reply_text"):
+                await target_message.reply_text(
+                    locales.NO_GAMES_PLAYED,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=back_to_menu_kb,
+                )
             return
         
         # Get rank tier information
@@ -4772,12 +5301,22 @@ class GameHandlers:
                 message += f"{rank_info['icon']} {rank_info['name_uk']} → {next_rank['icon']} {next_rank['name_uk']}\n"
                 message += f"[{bar}] {int(progress_pct)}% ({current_rating} / {next_rating})\n"
         
-        await update.message.reply_text(message, parse_mode=ParseMode.HTML)
+        if edit and hasattr(target_message, "edit_text"):
+            await target_message.edit_text(
+                message, parse_mode=ParseMode.HTML, reply_markup=back_to_menu_kb
+            )
+        elif hasattr(target_message, "reply_text"):
+            await target_message.reply_text(
+                message, parse_mode=ParseMode.HTML, reply_markup=back_to_menu_kb
+            )
     
     async def ratings_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /ratings command - show leaderboard with pagination."""
-        message = update.message or update.effective_message
         user = update.effective_user
+        if user and await self._is_user_blocked(user.id):
+            return
+        
+        message = update.message or update.effective_message
 
         if not self.rating_system:
             await message.reply_text("Система рейтингу недоступна.")
@@ -4808,6 +5347,9 @@ class GameHandlers:
     async def ratings_page_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle leaderboard page navigation."""
         query = update.callback_query
+        if query and query.from_user:
+            if await self._is_user_blocked(query.from_user.id):
+                return
         await query.answer()
 
         if not self.rating_system:

@@ -172,6 +172,14 @@ class RatingSystem:
                 """
             )
             
+            # Create blocked_users table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS blocked_users (
+                    user_id INTEGER PRIMARY KEY,
+                    blocked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
             await db.commit()
             logger.info(f"Rating database initialized at {self.db_path}")
 
@@ -1181,3 +1189,73 @@ class RatingSystem:
             
             logger.info(f"Arcade entry added: {name} with {rating} ELO (fake ID: {fake_user_id})")
             return fake_user_id
+    
+    async def block_user(self, user_id: int) -> bool:
+        """
+        Block a user by adding them to the blocked_users table.
+        
+        Args:
+            user_id: Telegram user ID to block
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute(
+                    "INSERT OR IGNORE INTO blocked_users (user_id) VALUES (?)",
+                    (user_id,)
+                )
+                await db.commit()
+                logger.info(f"User {user_id} blocked")
+                return True
+        except Exception as e:
+            logger.error(f"Error blocking user {user_id}: {e}")
+            return False
+    
+    async def unblock_user(self, user_id: int) -> bool:
+        """
+        Unblock a user by removing them from the blocked_users table.
+        
+        Args:
+            user_id: Telegram user ID to unblock
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute(
+                    "DELETE FROM blocked_users WHERE user_id = ?",
+                    (user_id,)
+                )
+                await db.commit()
+                deleted = cursor.rowcount > 0
+                if deleted:
+                    logger.info(f"User {user_id} unblocked")
+                return deleted
+        except Exception as e:
+            logger.error(f"Error unblocking user {user_id}: {e}")
+            return False
+    
+    async def is_user_blocked(self, user_id: int) -> bool:
+        """
+        Check if a user is blocked.
+        
+        Args:
+            user_id: Telegram user ID to check
+        
+        Returns:
+            True if user is blocked, False otherwise
+        """
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                async with db.execute(
+                    "SELECT 1 FROM blocked_users WHERE user_id = ?",
+                    (user_id,)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                    return row is not None
+        except Exception as e:
+            logger.error(f"Error checking if user {user_id} is blocked: {e}")
+            return False

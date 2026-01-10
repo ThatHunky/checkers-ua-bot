@@ -5,6 +5,7 @@ Implements Russian/Ukrainian drafts rules on an 8x8 board.
 
 from typing import List, Tuple, Optional, Set, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 
 # Piece constants
 EMPTY = 0
@@ -40,6 +41,260 @@ class CheckersEngine:
         self.board: List[int] = self.init_board()
         self.current_turn = YELLOW  # YELLOW starts (opponent moves first)
         self.move_count = 0  # Track total moves made
+
+    # Score = (total_captures, total_kings_captured)
+    _Score = Tuple[int, int]
+
+    @staticmethod
+    def piece_color(piece: int) -> Optional[int]:
+        """Pure helper: color of a piece, or None if EMPTY/unknown."""
+        if piece in (YELLOW, YELLOW_KING):
+            return YELLOW
+        if piece in (BLUE, BLUE_KING):
+            return BLUE
+        return None
+
+    @staticmethod
+    def is_king_piece(piece: int) -> bool:
+        """Pure helper: whether a piece value represents a king."""
+        return piece in (YELLOW_KING, BLUE_KING)
+
+    @staticmethod
+    def is_king_row_for_piece(piece: int, row: int) -> bool:
+        """Pure helper: whether row is the promotion row for this man piece."""
+        return (piece == YELLOW and row == 0) or (piece == BLUE and row == 7)
+
+    @staticmethod
+    def is_king_value(piece: int) -> bool:
+        """Pure helper: piece is a king constant."""
+        return piece in (YELLOW_KING, BLUE_KING)
+
+    @staticmethod
+    def _apply_single_hop_capture(
+        board: Tuple[int, ...],
+        from_pos: int,
+        to_pos: int,
+        new_piece: int,
+        captured_pos: int,
+    ) -> Tuple[int, ...]:
+        """Return a new board after applying a single-hop capture."""
+        b = list(board)
+        b[from_pos] = EMPTY
+        b[captured_pos] = EMPTY
+        b[to_pos] = new_piece
+        return tuple(b)
+
+    @staticmethod
+    def _generate_single_hop_captures_from_state(
+        board: Tuple[int, ...],
+        from_pos: int,
+        piece: int,
+    ) -> List[Tuple[int, int, int, bool]]:
+        """
+        Generate all single-hop capture options from a position for a given board state.
+
+        Returns tuples: (to_pos, captured_pos, new_piece_value, promoted_during_capture)
+        """
+        if piece == EMPTY:
+            return []
+
+        color = CheckersEngine.piece_color(piece)
+        if color is None:
+            return []
+
+        row, col = CheckersEngine.pos_to_coords(from_pos)
+        results: List[Tuple[int, int, int, bool]] = []
+
+        if CheckersEngine.is_king_piece(piece):
+            # Flying king captures: first enemy in direction, land on any empty square beyond.
+            for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                # Scan to first piece.
+                enemy_pos: Optional[int] = None
+                for dist in range(1, 8):
+                    r = row + dr * dist
+                    c = col + dc * dist
+                    if not CheckersEngine.is_valid_pos(r, c):
+                        break
+                    p = board[CheckersEngine.coords_to_pos(r, c)]
+                    if p == EMPTY:
+                        continue
+                    p_color = CheckersEngine.piece_color(p)
+                    if p_color == color:
+                        break  # blocked by own piece
+                    enemy_pos = CheckersEngine.coords_to_pos(r, c)
+                    break
+
+                if enemy_pos is None:
+                    continue
+
+                # Landing squares beyond enemy until blocked/offboard.
+                enemy_row, enemy_col = CheckersEngine.pos_to_coords(enemy_pos)
+                for land_dist in range(1, 8):
+                    r = enemy_row + dr * land_dist
+                    c = enemy_col + dc * land_dist
+                    if not CheckersEngine.is_valid_pos(r, c):
+                        break
+                    land_pos = CheckersEngine.coords_to_pos(r, c)
+                    if board[land_pos] != EMPTY:
+                        break
+                    results.append((land_pos, enemy_pos, piece, False))
+        else:
+            # Men capture in all 4 diagonal directions (forward + backward).
+            for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                enemy_row = row + dr
+                enemy_col = col + dc
+                land_row = row + 2 * dr
+                land_col = col + 2 * dc
+                if not CheckersEngine.is_valid_pos(enemy_row, enemy_col) or not CheckersEngine.is_valid_pos(land_row, land_col):
+                    continue
+
+                enemy_pos = CheckersEngine.coords_to_pos(enemy_row, enemy_col)
+                land_pos = CheckersEngine.coords_to_pos(land_row, land_col)
+                enemy_piece = board[enemy_pos]
+                enemy_color = CheckersEngine.piece_color(enemy_piece)
+                if enemy_color is None or enemy_color == color:
+                    continue
+                if board[land_pos] != EMPTY:
+                    continue
+
+                promoted = CheckersEngine.is_king_row_for_piece(piece, land_row)
+                new_piece = (YELLOW_KING if piece == YELLOW else BLUE_KING) if promoted else piece
+                results.append((land_pos, enemy_pos, new_piece, promoted))
+
+        return results
+
+    @staticmethod
+    @lru_cache(maxsize=200_000)
+    def _best_capture_score_from_state(
+        board: Tuple[int, ...],
+        from_pos: int,
+        piece: int,
+    ) -> _Score:
+        """
+        Compute best achievable capture score from a given state.
+        Score is lexicographically compared as (captures_count, kings_captured_count).
+        """
+        hops = CheckersEngine._generate_single_hop_captures_from_state(board, from_pos, piece)
+        if not hops:
+            return (0, 0)
+
+        best: CheckersEngine._Score = (0, 0)
+        for to_pos, captured_pos, new_piece, _promoted in hops:
+            captured_piece = board[captured_pos]
+            captured_kings = 1 if CheckersEngine.is_king_piece(captured_piece) else 0
+            next_board = CheckersEngine._apply_single_hop_capture(
+                board=board,
+                from_pos=from_pos,
+                to_pos=to_pos,
+                new_piece=new_piece,
+                captured_pos=captured_pos,
+            )
+            child = CheckersEngine._best_capture_score_from_state(next_board, to_pos, new_piece)
+            score = (1 + child[0], captured_kings + child[1])
+            if score > best:
+                best = score
+
+        return best
+
+    @staticmethod
+    def _best_hops_from_state(
+        board: Tuple[int, ...],
+        from_pos: int,
+        piece: int,
+    ) -> List[Tuple[int, int, int, bool]]:
+        """
+        Filter single-hop captures to only those that can lead to the best score from this state.
+        """
+        hops = CheckersEngine._generate_single_hop_captures_from_state(board, from_pos, piece)
+        if not hops:
+            return []
+
+        best_score: CheckersEngine._Score = (0, 0)
+        scored: List[Tuple[CheckersEngine._Score, Tuple[int, int, int, bool]]] = []
+        for hop in hops:
+            to_pos, captured_pos, new_piece, promoted = hop
+            captured_piece = board[captured_pos]
+            captured_kings = 1 if CheckersEngine.is_king_piece(captured_piece) else 0
+            next_board = CheckersEngine._apply_single_hop_capture(
+                board=board,
+                from_pos=from_pos,
+                to_pos=to_pos,
+                new_piece=new_piece,
+                captured_pos=captured_pos,
+            )
+            child = CheckersEngine._best_capture_score_from_state(next_board, to_pos, new_piece)
+            total = (1 + child[0], captured_kings + child[1])
+            if total > best_score:
+                best_score = total
+            scored.append((total, (to_pos, captured_pos, new_piece, promoted)))
+
+        return [hop for score, hop in scored if score == best_score]
+
+    # Capture sequence element:
+    # (final_landing_pos, captured_positions_in_order, promoted_during_capture_any_step)
+    _CaptureSeq = Tuple[int, Tuple[int, ...], bool]
+    _SeqResult = Tuple[_Score, Tuple[_CaptureSeq, ...]]
+
+    @staticmethod
+    @lru_cache(maxsize=200_000)
+    def _best_capture_sequences_from_state(
+        board: Tuple[int, ...],
+        from_pos: int,
+        piece: int,
+    ) -> _SeqResult:
+        """
+        Return (best_score, sequences) for the given state.
+
+        sequences are only those that achieve the best_score (max captures, then max king captures).
+        """
+        hops = CheckersEngine._generate_single_hop_captures_from_state(board, from_pos, piece)
+        if not hops:
+            return (0, 0), tuple()
+
+        best_score: CheckersEngine._Score = (0, 0)
+        best_sequences: List[CheckersEngine._CaptureSeq] = []
+
+        for to_pos, captured_pos, new_piece, promoted in hops:
+            captured_piece = board[captured_pos]
+            captured_kings = 1 if CheckersEngine.is_king_piece(captured_piece) else 0
+            next_board = CheckersEngine._apply_single_hop_capture(
+                board=board,
+                from_pos=from_pos,
+                to_pos=to_pos,
+                new_piece=new_piece,
+                captured_pos=captured_pos,
+            )
+
+            child_score, child_seqs = CheckersEngine._best_capture_sequences_from_state(next_board, to_pos, new_piece)
+            total_score = (1 + child_score[0], captured_kings + child_score[1])
+
+            # Build full sequences by prepending this captured_pos.
+            if child_seqs:
+                built = [
+                    (end_pos, (captured_pos,) + caps, promoted or child_promoted)
+                    for (end_pos, caps, child_promoted) in child_seqs
+                ]
+            else:
+                built = [(to_pos, (captured_pos,), promoted)]
+
+            if total_score > best_score:
+                best_score = total_score
+                best_sequences = built
+                continue
+
+            if total_score == best_score:
+                best_sequences.extend(built)
+
+        # Deduplicate sequences defensively (can happen when multiple paths lead to same end/capture list).
+        seen: Set[Tuple[int, Tuple[int, ...], bool]] = set()
+        unique: List[CheckersEngine._CaptureSeq] = []
+        for seq in best_sequences:
+            if seq in seen:
+                continue
+            seen.add(seq)
+            unique.append(seq)
+
+        return best_score, tuple(unique)
 
     @staticmethod
     def position_key(board: Sequence[int], current_turn: int) -> str:
@@ -100,28 +355,137 @@ class CheckersEngine:
     def is_king(self, piece: int) -> bool:
         """Check if piece is a king."""
         return piece in (YELLOW_KING, BLUE_KING)
+
+    def get_legal_single_hop_moves(self, pending_pos: Optional[int] = None) -> List[Move]:
+        """
+        Get legal *single-step* moves for the current player, applying best-capture rules.
+
+        If pending_pos is provided, this returns only legal continuation captures from that position
+        (and filters them to only the best remaining line).
+
+        If pending_pos is None:
+        - If any capture exists: return only capture hops that lead to the globally best line
+          (max total captures, then max kings captured).
+        - Otherwise: return normal non-capturing moves.
+        """
+        board_state = tuple(self.board)
+        color = self.current_turn
+
+        if pending_pos is not None:
+            if not (0 <= pending_pos < 64):
+                return []
+            piece = self.board[pending_pos]
+            if self.get_piece_color(piece) != color:
+                return []
+
+            best_hops = self._best_hops_from_state(board_state, pending_pos, piece)
+            return [
+                Move(
+                    from_pos=pending_pos,
+                    to_pos=to_pos,
+                    captures=[captured_pos],
+                    promotes=promoted,
+                    promoted_during_capture=promoted,
+                )
+                for (to_pos, captured_pos, _new_piece, promoted) in best_hops
+            ]
+
+        # Not in a forced continuation: compute all captures and enforce global best.
+        capture_candidates: List[Tuple[int, int, int, bool]] = []
+        best_global: CheckersEngine._Score = (0, 0)
+        scored_moves: List[Tuple[CheckersEngine._Score, Move]] = []
+
+        for from_pos in range(64):
+            piece = self.board[from_pos]
+            if self.get_piece_color(piece) != color:
+                continue
+            hops = self._generate_single_hop_captures_from_state(board_state, from_pos, piece)
+            for to_pos, captured_pos, new_piece, promoted in hops:
+                captured_piece = board_state[captured_pos]
+                captured_kings = 1 if self.is_king(captured_piece) else 0
+                next_board = self._apply_single_hop_capture(
+                    board=board_state,
+                    from_pos=from_pos,
+                    to_pos=to_pos,
+                    new_piece=new_piece,
+                    captured_pos=captured_pos,
+                )
+                child = self._best_capture_score_from_state(next_board, to_pos, new_piece)
+                total = (1 + child[0], captured_kings + child[1])
+                if total > best_global:
+                    best_global = total
+                scored_moves.append(
+                    (
+                        total,
+                        Move(
+                            from_pos=from_pos,
+                            to_pos=to_pos,
+                            captures=[captured_pos],
+                            promotes=promoted,
+                            promoted_during_capture=promoted,
+                        ),
+                    )
+                )
+
+        if scored_moves and best_global > (0, 0):
+            return [m for score, m in scored_moves if score == best_global]
+
+        # No captures exist anywhere: allow normal moves.
+        normal_moves: List[Move] = []
+        for pos in range(64):
+            piece = self.board[pos]
+            if self.get_piece_color(piece) != color:
+                continue
+            normal_moves.extend(self._get_normal_moves_from_pos(pos))
+        return normal_moves
     
     def get_legal_moves(self, color: int) -> List[Move]:
         """
         Get all legal moves for the given color.
         Enforces mandatory capture rule.
         """
-        all_captures = []
-        all_normal_moves = []
-        
+        board_state = tuple(self.board)
+
+        # Find global best capture score among all pieces of this color.
+        global_best: CheckersEngine._Score = (0, 0)
+        per_piece: List[Tuple[int, CheckersEngine._Score, Tuple[CheckersEngine._CaptureSeq, ...]]] = []
+
         for pos in range(64):
             piece = self.board[pos]
-            if self.get_piece_color(piece) == color:
-                # Check for captures first
-                piece_captures = self._get_captures_from_pos(pos)
-                all_captures.extend(piece_captures)
-                
-                # Also get normal moves (we'll only use them if no captures exist)
-                piece_moves = self._get_normal_moves_from_pos(pos)
-                all_normal_moves.extend(piece_moves)
-        
-        # Mandatory capture: return captures if any exist
-        return all_captures if all_captures else all_normal_moves
+            if self.get_piece_color(piece) != color:
+                continue
+            score, seqs = self._best_capture_sequences_from_state(board_state, pos, piece)
+            if score > global_best:
+                global_best = score
+            if score > (0, 0):
+                per_piece.append((pos, score, seqs))
+
+        # If any capture exists, enforce best-capture rule (max captures, then max kings captured).
+        if global_best > (0, 0):
+            moves: List[Move] = []
+            for from_pos, score, seqs in per_piece:
+                if score != global_best:
+                    continue
+                for end_pos, captures, promoted_during_capture in seqs:
+                    moves.append(
+                        Move(
+                            from_pos=from_pos,
+                            to_pos=end_pos,
+                            captures=list(captures),
+                            promotes=False,
+                            promoted_during_capture=promoted_during_capture,
+                        )
+                    )
+            return moves
+
+        # Otherwise, allow normal non-capturing moves.
+        all_normal_moves: List[Move] = []
+        for pos in range(64):
+            piece = self.board[pos]
+            if self.get_piece_color(piece) != color:
+                continue
+            all_normal_moves.extend(self._get_normal_moves_from_pos(pos))
+        return all_normal_moves
     
     def _get_normal_moves_from_pos(self, pos: int) -> List[Move]:
         """Get non-capturing moves from a position."""
@@ -542,8 +906,8 @@ class CheckersEngine:
         Returns:
             True if piece must continue capturing
         """
-        single_hops = self.find_single_hop_captures(pos)
-        return len(single_hops) > 0
+        continuation = self.get_legal_single_hop_moves(pending_pos=pos)
+        return len(continuation) > 0
     
     def apply_move(self, move: Move) -> bool:
         """

@@ -47,7 +47,10 @@ class BoardRenderer:
     
     @staticmethod
     def create_move_keyboard(engine: CheckersEngine, selected_pos: Optional[int] = None, 
-                            move_count: int = 1, pending_capture: dict = None) -> InlineKeyboardMarkup:
+                            move_count: int = 1,
+                            pending_capture: dict = None,
+                            draw_offer: Optional[dict] = None,
+                            draw_button_min_moves: int = 20) -> InlineKeyboardMarkup:
         """
         Create inline keyboard showing the actual board as clickable buttons.
         
@@ -61,38 +64,17 @@ class BoardRenderer:
         if pending_capture:
             pending_pos = pending_capture.get("pos")
             # If no follow-up captures remain, fall back to normal selection
-            if not engine.must_continue_capturing(pending_pos):
+            legal_moves = engine.get_legal_single_hop_moves(pending_pos=pending_pos)
+            if not legal_moves:
                 pending_capture = None
             else:
-                # Only show single-hop captures from the pending position
-                legal_moves = engine.find_single_hop_captures(pending_pos)
                 movable_positions = {pending_pos}
                 selected_pos = pending_pos  # Auto-select the piece
 
         if not pending_capture:
-            # Normal mode: get all legal moves but use single-hop for captures
-            all_legal_moves = engine.get_legal_moves(engine.current_turn)
-            
-            # Separate captures from regular moves
-            capture_positions = set()
-            regular_move_positions = set()
-            
-            for move in all_legal_moves:
-                if move.captures:
-                    capture_positions.add(move.from_pos)
-                else:
-                    regular_move_positions.add(move.from_pos)
-            
-            # If any captures available, ONLY show captures (mandatory)
-            if capture_positions:
-                movable_positions = capture_positions
-                # Get single-hop captures for these positions
-                legal_moves = []
-                for pos in capture_positions:
-                    legal_moves.extend(engine.find_single_hop_captures(pos))
-            else:
-                movable_positions = regular_move_positions
-                legal_moves = [m for m in all_legal_moves if not m.captures]
+            # Normal mode: use engine-filtered single-hop moves (captures are mandatory and best-line enforced)
+            legal_moves = engine.get_legal_single_hop_moves()
+            movable_positions = {m.from_pos for m in legal_moves}
         
         # If a piece is selected, get its possible moves
         selected_destinations = set()
@@ -161,6 +143,19 @@ class BoardRenderer:
         if move_count == 0:
             control_buttons.append(InlineKeyboardButton(locales.BTN_CANCEL, callback_data="forfeit"))
         else:
+            # Draw controls: manual offer/accept/decline flow (only after threshold)
+            if int(move_count or 0) >= int(draw_button_min_moves or 0):
+                if isinstance(draw_offer, dict) and draw_offer.get("by_user_id"):
+                    control_buttons.append(
+                        InlineKeyboardButton(locales.BTN_DRAW_ACCEPT, callback_data="draw_accept")
+                    )
+                    control_buttons.append(
+                        InlineKeyboardButton(locales.BTN_DRAW_DECLINE, callback_data="draw_decline")
+                    )
+                else:
+                    control_buttons.append(
+                        InlineKeyboardButton(locales.BTN_DRAW_OFFER, callback_data="draw_offer")
+                    )
             control_buttons.append(InlineKeyboardButton(locales.BTN_FORFEIT, callback_data="forfeit"))
             
         buttons.append(control_buttons)

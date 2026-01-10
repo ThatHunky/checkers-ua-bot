@@ -129,6 +129,8 @@ def main():
     application.add_handler(CommandHandler("ratings", handlers.ratings_command))
     application.add_handler(CommandHandler("resetrankings", handlers.reset_rankings_command))  # Hidden admin command
     application.add_handler(CommandHandler("addlegend", handlers.add_legend_command))  # Hidden arcade mode command
+    application.add_handler(CommandHandler("blockcheckers", handlers.blockcheckers_command))  # Hidden admin command
+    application.add_handler(CommandHandler("unblockcheckers", handlers.unblockcheckers_command))  # Hidden admin command
     
     # Register callback handlers
     application.add_handler(CallbackQueryHandler(handlers.confirm_cancel_callback, pattern="^confirm_cancel_"))
@@ -141,6 +143,9 @@ def main():
     application.add_handler(CallbackQueryHandler(handlers.cancel_invite_callback, pattern="^cancel_invite$"))
     application.add_handler(CallbackQueryHandler(handlers.select_callback, pattern="^select_"))
     application.add_handler(CallbackQueryHandler(handlers.move_callback, pattern="^move_"))
+    application.add_handler(
+        CallbackQueryHandler(handlers.draw_callback, pattern="^draw_(offer|accept|decline)$")
+    )
     application.add_handler(CallbackQueryHandler(handlers.back_callback, pattern="^back$"))
     application.add_handler(CallbackQueryHandler(handlers.forfeit_callback, pattern="^forfeit$"))
     application.add_handler(CallbackQueryHandler(handlers.new_game_callback, pattern="^new_game$"))

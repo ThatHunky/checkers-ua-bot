@@ -447,6 +447,81 @@ class TestSpecialRules:
         if has_captures:
             # All moves should be captures
             assert all(m.captures for m in moves), "All moves should be captures when captures available"
+
+    def test_best_capture_global_max_captures_enforced(self, empty_engine: CheckersEngine):
+        """
+        When multiple pieces can capture, player must choose the line with maximum total captures.
+        """
+        # Board:
+        # - YELLOW man at (5,0) can capture two pieces: (4,1) then (2,3)
+        # - YELLOW man at (5,4) can capture only one piece: (4,5)
+        empty_engine.board[40] = YELLOW  # (5,0)
+        empty_engine.board[44] = YELLOW  # (5,4)
+
+        empty_engine.board[33] = BLUE  # (4,1) capturable by 40 -> 26
+        empty_engine.board[19] = BLUE  # (2,3) capturable by 26 -> 12
+
+        empty_engine.board[37] = BLUE  # (4,5) capturable by 44 -> 30
+        empty_engine.current_turn = YELLOW
+
+        moves = empty_engine.get_legal_moves(YELLOW)
+        assert moves, "Should have legal moves"
+        assert all(m.captures for m in moves), "Should enforce capture when available"
+        assert all(m.from_pos == 40 for m in moves), "Only the max-capture piece should be allowed"
+        assert all(len(m.captures) == 2 for m in moves), "Must choose a line with maximum captures"
+
+        single = empty_engine.get_legal_single_hop_moves()
+        assert single, "Should have legal single-hop options"
+        assert all(m.from_pos == 40 for m in single), "Only the max-capture piece should be selectable (single-hop)"
+
+    def test_best_capture_tie_break_by_most_kings(self, empty_engine: CheckersEngine):
+        """
+        If multiple max-length capture lines exist, choose the one that captures the most kings.
+        """
+        # YELLOW king at (4,3) has two 2-capture lines:
+        # - Line A captures a BLUE KING then a BLUE man (kings captured=1)
+        # - Line B captures two BLUE men (kings captured=0)
+        empty_engine.board[35] = YELLOW_KING  # (4,3)
+        empty_engine.board[8] = YELLOW  # block alternative landing beyond 26
+
+        # Line A (NE): capture (3,4)=28 (BLUE_KING), land (2,5)=21; then capture (1,6)=14, land (0,7)=7
+        empty_engine.board[28] = BLUE_KING
+        empty_engine.board[14] = BLUE
+
+        # Line B (NW): capture (3,2)=26 (BLUE), land (2,1)=17; then capture (1,2)=10, land (0,3)=3
+        empty_engine.board[26] = BLUE
+        empty_engine.board[10] = BLUE
+
+        empty_engine.current_turn = YELLOW
+
+        moves = empty_engine.get_legal_moves(YELLOW)
+        assert moves, "Should have capture moves"
+        assert all(m.from_pos == 35 for m in moves), "Only king should be moving in this setup"
+        assert all(len(m.captures) == 2 for m in moves), "Both best lines are 2-capture"
+        assert all(28 in m.captures for m in moves), "Must prefer the line that captures the most kings"
+
+        single = empty_engine.get_legal_single_hop_moves()
+        assert single, "Should have legal single-hop captures"
+        assert all(m.from_pos == 35 for m in single)
+        assert all(m.captures == [28] for m in single), "First hop must be the king-capture hop"
+
+    def test_flying_king_landing_must_allow_best_continuation(self, empty_engine: CheckersEngine):
+        """
+        Flying king can have multiple landing squares after a capture; only landings that keep
+        the best (max-capture) continuation are legal.
+        """
+        # YELLOW king at (4,3) can capture (3,4)=28 and land on {21,14,7}
+        # Only landing on 21 allows a second capture (12 -> 3).
+        empty_engine.board[35] = YELLOW_KING
+        empty_engine.board[28] = BLUE
+        empty_engine.board[12] = BLUE  # (1,4), capturable from landing (2,5)=21
+        empty_engine.current_turn = YELLOW
+
+        single = empty_engine.get_legal_single_hop_moves()
+        assert single, "Should have capture options"
+        assert all(m.from_pos == 35 for m in single)
+        assert all(m.captures == [28] for m in single)
+        assert {m.to_pos for m in single} == {21}, "Only the landing that preserves max-capture continuation is legal"
     
     def test_maximum_capture_sequence(self, empty_engine: CheckersEngine):
         """Test finding maximum capture sequence."""

@@ -130,6 +130,53 @@ class TestKeyboardCreation:
                 )
                 # May or may not have continue button depending on implementation
                 assert isinstance(has_continue, bool)
+
+    def test_keyboard_only_shows_best_capture_pieces(self, empty_engine: CheckersEngine):
+        """
+        When captures exist, keyboard should only allow selecting pieces that are part of the best
+        (max-capture, then most-kings) line.
+        """
+        # Same scenario as engine test: only piece at 40 has the max capture line.
+        empty_engine.board[40] = YELLOW
+        empty_engine.board[44] = YELLOW
+        empty_engine.board[33] = BLUE
+        empty_engine.board[19] = BLUE
+        empty_engine.board[37] = BLUE
+        empty_engine.current_turn = YELLOW
+
+        keyboard = BoardRenderer.create_move_keyboard(empty_engine)
+        callbacks = [
+            btn.callback_data
+            for row in keyboard.inline_keyboard
+            for btn in row
+            if isinstance(btn.callback_data, str)
+        ]
+        assert f"select_{40}" in callbacks, "Best-capture piece should be selectable"
+        assert f"select_{44}" not in callbacks, "Non-best capture piece should not be selectable"
+
+    def test_keyboard_pending_capture_only_shows_best_destinations(self, empty_engine: CheckersEngine):
+        """
+        In a forced continuation, keyboard should only show destinations that keep the best continuation.
+        """
+        # Flying king landing choice: only landing at 21 is legal (preserves a second capture).
+        empty_engine.board[35] = YELLOW_KING
+        empty_engine.board[28] = BLUE
+        empty_engine.board[12] = BLUE
+        empty_engine.current_turn = YELLOW
+
+        keyboard = BoardRenderer.create_move_keyboard(
+            empty_engine,
+            pending_capture={"pos": 35, "must_continue": True},
+        )
+        callbacks = [
+            btn.callback_data
+            for row in keyboard.inline_keyboard
+            for btn in row
+            if isinstance(btn.callback_data, str)
+        ]
+        assert "move_35_21" in callbacks
+        assert "move_35_14" not in callbacks
+        assert "move_35_7" not in callbacks
     
     def test_create_keyboard_button_labels(self, checkers_engine: CheckersEngine):
         """Test keyboard button labels are correct."""

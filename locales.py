@@ -35,6 +35,9 @@ ERROR_SELF_PLAY = "❌ Ви не можете грати проти себе!"
 BTN_FORFEIT = "🏳️ Здатися"
 BTN_CANCEL = "🚫 Скасувати гру"
 BTN_NEW_GAME = "🆕 Нова гра"
+BTN_DRAW_OFFER = "🤝 Запропонувати нічию"
+BTN_DRAW_ACCEPT = "✅ Прийняти нічию"
+BTN_DRAW_DECLINE = "❌ Відхилити нічию"
 
 # Board Pieces (for text rendering)
 PIECE_EMPTY_DARK = "⬛"
