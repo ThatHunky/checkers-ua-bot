@@ -41,24 +41,34 @@ async def create_test_achievements_db():
             )
         """)
         
-        # Insert key achievements for testing
-        test_achievements = [
-            ("victory_lightning", "Lightning Victory", "Блискавка", "Win in under 25 moves", "Виграйте менше ніж за 25 ходів", "⚡", "victory", 25),
-            ("victory_hurricane", "Hurricane", "Ураган", "Win in under 20 moves", "Виграйте менше ніж за 20 ходів", "💨", "victory", 20),
-            ("time_early_bird", "Early Bird", "Ранкова Пташка", "Win before 8 AM", "Виграйте до 8 ранку", "🌅", "time", 8),
-            ("time_night_owl", "Night Owl", "Нічна Сова", "Win after midnight", "Виграйте після півночі", "🌙", "time", 0),
-            ("time_daily_player", "Daily Player", "Щоденний Гравець", "Play 7 days", "Зіграйте 7 днів", "📅", "time", 7),
-            ("gameplay_king_of_kings", "King of Kings", "Король Дамок", "Promote 5 pieces", "Перетворіть 5 фігур", "👑", "gameplay", 5),
-            ("gameplay_precise_strike", "Precise Strike", "Точний Удар", "Capture 5+ in one move", "Знищіть 5+ за хід", "🎯", "gameplay", 5),
-            ("gameplay_fortress_gameplay", "Fortress", "Фортеця", "Win without losing pieces", "Виграйте без втрати", "🛡️", "gameplay", 1),
-            ("victory_comeback_100", "Comeback King", "Король Повернень", "Win from 100+ deficit", "Виграйте з дефіцитом 100+", "🔄", "victory", 100),
-            ("victory_speed_demon", "Speed Demon", "Швидкий Демон", "Win 3 games in one day", "Виграйте 3 гри за день", "⏱️", "victory", 3),
-            ("rising_star", "Rising Star", "Висхідна Зірка", "Gain 200 rating in a week", "Отримайте 200 за тиждень", "📈", "milestone", 200),
-            ("streak_precision", "Precision Streak", "Точність", "Win 5 perfect games in a row", "Виграйте 5 ідеальних поспіль", "🎯", "streak", 5),
-            ("special_holiday", "Holiday", "Святковий", "Win on holiday", "Виграйте на свято", "🎄", "special", 1),
-            ("special_anniversary", "Anniversary", "Ювілей", "Play first game", "Зіграйте першу гру", "🎊", "special", 1),
-        ]
-        
+        # Seed from the PRODUCTION catalog rather than a hand-copied literal.
+        # A test that inserts its own thresholds and then asserts them back can
+        # never notice the real catalog changing -- which is the whole point of
+        # the threshold assertions below.
+        catalog = {
+            entry[0]: entry
+            for entry in AchievementSystem._load_default_achievements_catalog()
+        }
+        wanted_ids = (
+            "victory_lightning",
+            "victory_hurricane",
+            "time_early_bird",
+            "time_night_owl",
+            "time_daily_player",
+            "gameplay_king_of_kings",
+            "gameplay_precise_strike",
+            "gameplay_fortress_gameplay",
+            "victory_comeback_100",
+            "victory_speed_demon",
+            "rising_star",
+            "streak_precision",
+            "special_holiday",
+            "special_anniversary",
+        )
+        missing = [ach_id for ach_id in wanted_ids if ach_id not in catalog]
+        assert not missing, f"achievements catalog is missing: {missing}"
+        test_achievements = [catalog[ach_id] for ach_id in wanted_ids]
+
         for ach in test_achievements:
             await db.execute("""
                 INSERT INTO achievements 

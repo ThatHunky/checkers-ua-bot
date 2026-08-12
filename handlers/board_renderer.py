@@ -63,8 +63,13 @@ class BoardRenderer:
         # Handle pending capture (must continue capturing)
         if pending_capture:
             pending_pos = pending_capture.get("pos")
-            # If no follow-up captures remain, fall back to normal selection
-            legal_moves = engine.get_legal_single_hop_moves(pending_pos=pending_pos)
+            # If no follow-up captures remain, fall back to normal selection.
+            # captured_so_far keeps the already-captured squares as blockers, so the
+            # squares drawn here are exactly the ones move_callback will accept.
+            legal_moves = engine.get_legal_single_hop_moves(
+                pending_pos=pending_pos,
+                captured_so_far=pending_capture.get("captured"),
+            )
             if not legal_moves:
                 pending_capture = None
             else:

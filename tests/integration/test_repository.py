@@ -196,6 +196,19 @@ class TestInlineGames:
         assert retrieved["blue_player_id"] == inline_game_state["blue_player_id"]
         assert retrieved["yellow_player_id"] == inline_game_state["yellow_player_id"]
 
+    def test_get_all_inline_games_handles_colon_in_inline_message_id(
+        self,
+        game_repository: GameRepository,
+        inline_game_state: dict,
+    ):
+        """Inline IDs may contain ':' and should round-trip correctly."""
+        inline_message_id = "inline:with:colon"
+        game_repository.save_inline_game(inline_message_id, inline_game_state)
+
+        all_games = game_repository.get_all_inline_games()
+        inline_ids = [item[0] for item in all_games]
+        assert inline_message_id in inline_ids
+
 
 @pytest.mark.integration
 class TestConnectionManagement:
@@ -205,4 +218,3 @@ class TestConnectionManagement:
         """Test Redis ping."""
         result = game_repository.ping()
         assert result is True, "Should ping successfully"
-

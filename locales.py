@@ -87,6 +87,8 @@ INLINE_CHALLENGE_JOIN = "⚔️ Приєднатися"
 INLINE_CHALLENGE_EXPIRED = "❌ Виклик закінчився або вже використано."
 INLINE_CHALLENGE_SELF_JOIN = "❌ Ви не можете приєднатися до власного виклику."
 INLINE_CHALLENGE_NOT_FOUND = "❌ Виклик не знайдено."
+INLINE_CHALLENGE_ALREADY_STARTED = "❌ Гра за цим викликом уже триває."
+INLINE_CHALLENGE_WRONG_OPPONENT = "❌ Цей виклик адресовано іншому гравцю."
 
 # Inline Challenge Modes
 INLINE_CHALLENGE_CASUAL_TITLE = "🎲 Виклик (Без рейтингу)"

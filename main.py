@@ -4,6 +4,7 @@ Supports both polling and webhook modes via USE_WEBHOOK env variable.
 """
 
 import os
+import hashlib
 import logging
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -26,6 +27,8 @@ from ratings import RatingSystem
 from game_data import GameDataRepository
 from achievements import AchievementSystem
 from engine import BLUE, YELLOW
+from handler_registry import register_handlers
+import locales
 
 # Load environment variables
 load_dotenv()
@@ -34,17 +37,35 @@ load_dotenv()
 TOKEN = os.getenv("TOKEN")
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 PORT = int(os.getenv("PORT", "8787"))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://checkers.dobrovolskyi.xyz")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://checkers.dobrovolskyi.com.ua")
 WEBHOOK_LISTEN = os.getenv("WEBHOOK_LISTEN", "0.0.0.0")
 DB_PATH = os.getenv("DB_PATH", "/data/ratings.db")
 GAMEDATA_DB_PATH = os.getenv("GAMEDATA_DB_PATH", "/data/gamedata.db")
 USE_WEBHOOK = os.getenv("USE_WEBHOOK", "false").lower() == "true"
 GAME_TIMEOUT_MINUTES = int(os.getenv("GAME_TIMEOUT_MINUTES", "10"))
 
+# Webhook authentication. Telegram echoes WEBHOOK_SECRET back in the
+# X-Telegram-Bot-Api-Secret-Token header, which PTB verifies on every request;
+# without it anyone who learns the URL can POST forged updates. Both values
+# default to a deterministic, non-reversible derivation of the token so an
+# existing deployment keeps a stable URL without new .env entries -- and so the
+# bot token itself never appears in a URL, a log line, or a proxy access log.
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET") or (
+    hashlib.sha256(f"{TOKEN}:webhook-secret".encode()).hexdigest() if TOKEN else None
+)
+WEBHOOK_PATH = os.getenv("WEBHOOK_PATH") or (
+    hashlib.sha256(f"{TOKEN}:webhook-path".encode()).hexdigest()[:32] if TOKEN else "telegram"
+)
+
 # Logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
+# httpx logs the full request URL at INFO, and every Telegram API URL embeds the
+# bot token (https://api.telegram.org/bot<TOKEN>/sendMessage). At INFO that
+# writes the token to the container log on every single API call.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Global references for timeout job
@@ -114,7 +135,9 @@ async def check_game_timeouts(context: ContextTypes.DEFAULT_TYPE):
 
         # Update ratings (only for rated games)
         rating_msg = ""
-        mode = game_state.get("mode", "rated")
+        # Same normalization/default as every other reader of game_state["mode"]:
+        # a game with no recorded mode is shown as unrated, so it settles unrated.
+        mode = locales.normalize_mode(game_state.get("mode"))
         move_count = int(game_state.get("move_count", 0) or 0)
         if _rating_system and mode == "rated" and move_count > 0:
             try:
@@ -238,7 +261,9 @@ async def check_game_timeouts(context: ContextTypes.DEFAULT_TYPE):
 
         # Update ratings (only for rated games)
         rating_msg = ""
-        mode = game_state.get("mode", "rated")
+        # Same normalization/default as every other reader of game_state["mode"]:
+        # a game with no recorded mode is shown as unrated, so it settles unrated.
+        mode = locales.normalize_mode(game_state.get("mode"))
         move_count = int(game_state.get("move_count", 0) or 0)
         if _rating_system and mode == "rated" and move_count > 0:
             try:
@@ -352,9 +377,11 @@ async def post_init(application: Application):
             # First delete webhook to drop pending updates, then set it again
             logger.info("Deleting webhook to drop pending updates...")
             await application.bot.delete_webhook(drop_pending_updates=True)
-            logger.info(f"Setting webhook: {WEBHOOK_URL}/{TOKEN}")
+            logger.info(f"Setting webhook: {WEBHOOK_URL}/<redacted>")
             await application.bot.set_webhook(
-                url=f"{WEBHOOK_URL}/{TOKEN}", allowed_updates=Update.ALL_TYPES
+                url=f"{WEBHOOK_URL}/{WEBHOOK_PATH}",
+                allowed_updates=Update.ALL_TYPES,
+                secret_token=WEBHOOK_SECRET,
             )
             logger.info("Webhook set successfully")
         except Exception as e:
@@ -408,180 +435,20 @@ def main():
     application.job_queue.run_repeating(handlers.matchmaking_tick, interval=5, first=5)
     logger.info(f"Game timeout check enabled ({GAME_TIMEOUT_MINUTES} min timeout)")
 
-    # Register command handlers
-    application.add_handler(CommandHandler("start", handlers.start_bot_command))
-    application.add_handler(CommandHandler("menu", handlers.menu_command))
-    application.add_handler(CommandHandler("checkersplay", handlers.start_command))
-    application.add_handler(CommandHandler("checkersreplay", handlers.replay_command))
-    application.add_handler(CommandHandler("cancel", handlers.cancel_command))
-    application.add_handler(CommandHandler("forfeit", handlers.forfeit_command))
-    application.add_handler(CommandHandler("myrating", handlers.myrating_command))
-    application.add_handler(CommandHandler("ratings", handlers.ratings_command))
-    application.add_handler(
-        CommandHandler("achievements", handlers.achievements_command)
-    )
-    application.add_handler(CommandHandler("join", handlers.join_command))
-    application.add_handler(
-        CommandHandler("resetrankings", handlers.reset_rankings_command)
-    )  # Hidden admin
-    application.add_handler(
-        CommandHandler("addlegend", handlers.add_legend_command)
-    )  # Hidden arcade mode
-    application.add_handler(
-        CommandHandler("blockcheckers", handlers.blockcheckers_command)
-    )  # Hidden admin
-    application.add_handler(
-        CommandHandler("unblockcheckers", handlers.unblockcheckers_command)
-    )  # Hidden admin
-    application.add_handler(
-        MessageHandler(
-            filters.Regex(
-                "(?i)^/?menu(@\\w+)?$|^[^\\w\\s]*\\s*меню$|^меню$|^[^\\w\\s]*\\s*menu$|^menu$"
-            ),
-            handlers.menu_text_handler,
-        )
-    )
-
-    # Register inline query handlers
-    application.add_handler(InlineQueryHandler(handlers.inline_query_handler))
-    application.add_handler(
-        ChosenInlineResultHandler(handlers.chosen_inline_result_handler)
-    )
-
-    # Register callback handlers
-    application.add_handler(
-        CallbackQueryHandler(
-            handlers.inline_challenge_join_callback, pattern="^inline_challenge_join$"
-        )
-    )
-    application.add_handler(
-        CallbackQueryHandler(handlers.join_callback, pattern="^join")
-    )
-    application.add_handler(
-        CallbackQueryHandler(
-            handlers.menu_callback,
-            pattern="^(menu_|play_|invite_|join_code|mm_cancel|back_to_play)",
-        )
-    )
-    application.add_handler(
-        CallbackQueryHandler(
-            handlers.group_invite_mode_callback,
-            pattern="^group_invite_(rated|casual)_\\d+$",
-        )
-    )
-    application.add_handler(
-        CallbackQueryHandler(
-            handlers.group_invite_join_callback, pattern="^group_invite_join_"
-        )
-    )
-    application.add_handler(
-        CallbackQueryHandler(
-            handlers.group_invite_cancel_callback, pattern="^group_invite_cancel_"
-        )
-    )
-    application.add_handler(
-        CallbackQueryHandler(handlers.cancel_invite_callback, pattern="^cancel_invite$")
-    )
-    application.add_handler(
-        CallbackQueryHandler(
-            handlers.accept_private_invite_callback, pattern="^accept_invite_"
-        )
-    )
-    application.add_handler(
-        CallbackQueryHandler(handlers.accept_inline_callback, pattern="^accept_inline$")
-    )
-    application.add_handler(
-        CallbackQueryHandler(
-            handlers.decline_private_invite_callback, pattern="^decline_invite_"
-        )
-    )
-    application.add_handler(
-        CallbackQueryHandler(
-            handlers.confirm_cancel_callback, pattern="^confirm_cancel_"
-        )
-    )
-    application.add_handler(
-        CallbackQueryHandler(
-            handlers.confirm_forfeit_callback, pattern="^confirm_forfeit_"
-        )
-    )
-    application.add_handler(
-        CallbackQueryHandler(handlers.abort_forfeit_callback, pattern="^abort_forfeit_")
-    )
-    application.add_handler(
-        CallbackQueryHandler(
-            handlers.confirm_restart_callback, pattern="^confirm_restart_token_"
-        )
-    )
-    application.add_handler(
-        CallbackQueryHandler(
-            handlers.restart_abort_callback, pattern="^restart_abort_token_"
-        )
-    )
-    application.add_handler(
-        CallbackQueryHandler(handlers.cancel_abort_callback, pattern="^cancel_abort$")
-    )
-    application.add_handler(
-        CallbackQueryHandler(handlers.select_callback, pattern="^select_")
-    )
-    application.add_handler(
-        CallbackQueryHandler(handlers.move_callback, pattern="^move_")
-    )
-    application.add_handler(
-        CallbackQueryHandler(
-            handlers.draw_callback, pattern="^draw_(offer|accept|decline)$"
-        )
-    )
-    application.add_handler(
-        CallbackQueryHandler(handlers.back_callback, pattern="^back$")
-    )
-    application.add_handler(
-        CallbackQueryHandler(handlers.review_callback, pattern="^review_")
-    )
-    application.add_handler(
-        CallbackQueryHandler(handlers.forfeit_callback, pattern="^forfeit$")
-    )
-    application.add_handler(
-        CallbackQueryHandler(handlers.new_game_callback, pattern="^new_game$")
-    )
-    application.add_handler(
-        CallbackQueryHandler(handlers.replay_game_callback, pattern="^replay_")
-    )
-    application.add_handler(
-        CallbackQueryHandler(handlers.noop_callback, pattern="^noop_")
-    )
-    application.add_handler(
-        CallbackQueryHandler(handlers.ratings_page_callback, pattern="^ratings_page_")
-    )
-    application.add_handler(
-        CallbackQueryHandler(
-            handlers.achievement_category_callback, pattern="^ach_category_"
-        )
-    )
-    application.add_handler(
-        CallbackQueryHandler(handlers.achievement_back_callback, pattern="^ach_back")
-    )
-
-    # Debug: catch-all callback handler to log all callbacks (must be last)
-    async def debug_callback_handler(
-        update: Update, context: ContextTypes.DEFAULT_TYPE
-    ):
-        """Debug handler to catch unmatched callbacks."""
-        query = update.callback_query
-        if query:
-            await query.answer("❌ Callback не розпізнано", show_alert=True)
-
-    application.add_handler(CallbackQueryHandler(debug_callback_handler))
+    # Register every command / inline / callback handler. The table lives in
+    # handler_registry so main.py and main_polling.py cannot drift apart again.
+    register_handlers(application, handlers)
 
     # Start in appropriate mode
     if USE_WEBHOOK:
         logger.info(f"Starting bot in WEBHOOK mode on {WEBHOOK_LISTEN}:{PORT}")
-        logger.info(f"Webhook URL: {WEBHOOK_URL}/{TOKEN}")
+        logger.info(f"Webhook URL: {WEBHOOK_URL}/<redacted>")
         application.run_webhook(
             listen=WEBHOOK_LISTEN,
             port=PORT,
-            url_path=TOKEN,
-            webhook_url=f"{WEBHOOK_URL}/{TOKEN}",
+            url_path=WEBHOOK_PATH,
+            webhook_url=f"{WEBHOOK_URL}/{WEBHOOK_PATH}",
+            secret_token=WEBHOOK_SECRET,
         )
     else:
         logger.info("Starting bot in POLLING mode...")

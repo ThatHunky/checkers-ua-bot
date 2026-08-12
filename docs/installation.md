@@ -1,56 +1,80 @@
 # Installation
 
-This guide shows options for installing and running the Checkers UA Bot.
+Two ways to run the bot: locally with Python (development), or with compose
+(production). For the full production setup — TLS, webhooks, health checks — see
+[deployment.md](deployment.md).
 
-Requirements
+## Requirements
 
-- Linux (development and container images supported)
-- Python 3.10+ (match `requirements.txt`)
-- podman / docker (optional, for containerized deployment)
-- podman-compose or docker-compose (if using compose)
+- Linux
+- Python 3.11 (the image is `python:3.11-slim`)
+- Redis
+- Docker with the compose plugin, if you want the containerised setup
+- A bot token from [@BotFather](https://t.me/BotFather)
 
-Local Python setup
+## Configuration
 
-1. Create a virtual environment and activate it:
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-```
-
-2. Install dependencies:
+Every setting comes from the environment; `.env` in the repo root is loaded at
+startup. Copy the template and fill it in:
 
 ```bash
-pip install -r requirements.txt
+cp .env.example .env
 ```
 
-3. Create a `.env` (optional) in the repo root with any required secrets (example):
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `TOKEN` | — | **Required.** Bot token from @BotFather. |
+| `USE_WEBHOOK` | `false` | `true` = webhook mode, `false` = long polling. |
+| `PORT` | `8787` | Webhook listen port. |
+| `WEBHOOK_LISTEN` | `0.0.0.0` | Webhook bind address. |
+| `WEBHOOK_URL` | `https://checkers.dobrovolskyi.com.ua` | Public HTTPS base URL. |
+| `WEBHOOK_PATH` | derived from `TOKEN` | Optional. URL path segment. |
+| `WEBHOOK_SECRET` | derived from `TOKEN` | Optional. Telegram `secret_token`. |
+| `REDIS_URL` | `redis://redis:6379/0` | Redis connection. |
+| `DB_PATH` | `/data/ratings.db` | Ratings + achievements SQLite file. |
+| `GAMEDATA_DB_PATH` | `/data/gamedata.db` | Completed-game archive. |
+| `GAME_TIMEOUT_MINUTES` | `10` | Inactivity before a game is timed out. |
+| `ADMIN_ID` | — | Telegram user id allowed to run hidden admin commands. |
 
-```
-# .env
-TELEGRAM_TOKEN=your_bot_token_here
-DATABASE_URL=sqlite:///data/bot.db
-```
+`.env` is git-ignored and excluded from the image by `.dockerignore`; the container
+receives it at runtime via `env_file`.
 
-(See `main.py` / `main_polling.py` for environment usage.)
+Leaving `WEBHOOK_PATH` and `WEBHOOK_SECRET` unset derives both deterministically from
+`TOKEN` (SHA-256), which keeps the URL stable across restarts without extra config and
+keeps the token out of URLs and logs. Rotating `TOKEN` therefore also rotates the path
+and secret — safe, because the bot re-registers the webhook on every start.
 
-Containerized (Podman / Docker)
-
-1. Build the image with the included Containerfile:
+## Local Python setup
 
 ```bash
-podman build -t checkers-ua-bot -f Containerfile .
-# or: docker build -t checkers-ua-bot -f Containerfile .
+python3.11 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
-
-2. Start services with the compose file:
 
 ```bash
-podman-compose up -d
-# or: docker-compose up -d
+.venv/bin/python main_polling.py
 ```
 
-Notes
+Polling mode needs no public URL and no reverse proxy.
 
-- The repo includes `compose.yaml` for orchestrating service(s). Use `podman-compose` with Podman or `docker-compose` with Docker.
-- If you use a different DB or external services, configure connection strings in `.env` or environment variables when running containers.
+## Containerised setup
+
+```bash
+docker compose up -d --build
+```
+
+This starts two services: `bot` and `redis`. There is **no** Caddy container — TLS is
+terminated by a Caddy running on the host. Persistent data is bind-mounted from
+`/mnt/ssd1/checkers_data` to `/data`; change that path in `compose.yaml` to match your
+server.
+
+Check it came up:
+
+```bash
+docker compose ps && docker compose logs --tail 30 bot
+```
+
+## Next steps
+
+- [deployment.md](deployment.md) — webhooks, Caddy, health checks, backups
+- [development.md](development.md) — local workflow and house rules
+- [administration.md](administration.md) — admin commands

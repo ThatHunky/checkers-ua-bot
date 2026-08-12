@@ -25,5 +25,5 @@ class TestTimeoutHandling:
         """Test that timeout checking logic exists."""
         import main
         # Check if check_game_timeouts function exists
-        assert hasattr(main, "check_game_timeouts") or True
+        assert hasattr(main, "check_game_timeouts")
 

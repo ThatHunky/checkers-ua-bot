@@ -11,6 +11,24 @@ from pathlib import Path
 from typing import Generator
 from unittest.mock import Mock, AsyncMock, MagicMock
 
+# Pin the bot configuration BEFORE any test module imports main/main_polling.
+# Those modules call load_dotenv() at import time, which would otherwise pull
+# the real .env -- the live bot TOKEN and the real ADMIN_ID -- into the pytest
+# process and into any os.environ dump on failure. load_dotenv() does not
+# override variables that are already set, so seeding them here wins, and it
+# also means an admin-authorization test cannot accidentally pass by matching
+# the developer's own ADMIN_ID.
+for _key, _value in {
+    "TOKEN": "0000000000:test-token-not-a-real-bot",
+    "ADMIN_ID": "0",
+    "REDIS_URL": "redis://localhost:6379/0",
+    "USE_WEBHOOK": "false",
+    "WEBHOOK_URL": "https://example.invalid",
+    "DB_PATH": ":memory:",
+    "GAMEDATA_DB_PATH": ":memory:",
+}.items():
+    os.environ[_key] = _value
+
 from engine import CheckersEngine, YELLOW, BLUE
 from repository import GameRepository
 from ratings import RatingSystem

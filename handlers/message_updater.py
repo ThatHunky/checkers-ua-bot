@@ -3,6 +3,7 @@ Message update utilities for inline and regular game messages.
 """
 
 import asyncio
+import html
 import logging
 from typing import Optional
 from telegram import InlineKeyboardMarkup
@@ -36,10 +37,12 @@ class MessageUpdater:
     def _get_players_message(game_state: dict) -> str:
         """Get message showing both players with hyperlinked first names."""
         blue_player_id = game_state.get("blue_player_id")
-        blue_player_name = game_state.get("blue_player_name", "Blue")
+        # Names come straight from Telegram and are sent with parse_mode=HTML,
+        # so they must be escaped or a name containing '<' breaks every render.
+        blue_player_name = html.escape(str(game_state.get("blue_player_name", "Blue")))
         yellow_player_id = game_state.get("yellow_player_id")
-        yellow_player_name = game_state.get("yellow_player_name", "Yellow")
-        
+        yellow_player_name = html.escape(str(game_state.get("yellow_player_name", "Yellow")))
+
         # Create hyperlinked first names
         blue_tag = f'<a href="tg://user?id={blue_player_id}">{blue_player_name}</a>' if blue_player_id else blue_player_name
         yellow_tag = f'<a href="tg://user?id={yellow_player_id}">{yellow_player_name}</a>' if yellow_player_id else yellow_player_name
@@ -56,13 +59,14 @@ class MessageUpdater:
         
         if current_turn == BLUE:
             player_id = game_state.get("blue_player_id")
-            name = game_state.get("blue_player_name", "Blue")
+            # Escaped: rendered with parse_mode=HTML (see _get_players_message).
+            name = html.escape(str(game_state.get("blue_player_name", "Blue")))
             # Create hyperlinked first name
             player_tag = f'<a href="tg://user?id={player_id}">{name}</a>' if player_id else name
             return locales.TURN_RED.format(player_tag=player_tag)
         else:
             player_id = game_state.get("yellow_player_id")
-            name = game_state.get("yellow_player_name", "Yellow")
+            name = html.escape(str(game_state.get("yellow_player_name", "Yellow")))
             # Create hyperlinked first name
             player_tag = f'<a href="tg://user?id={player_id}">{name}</a>' if player_id else name
             return locales.TURN_WHITE.format(player_tag=player_tag)

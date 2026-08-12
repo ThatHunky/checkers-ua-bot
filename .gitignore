@@ -46,3 +46,17 @@ Thumbs.db
 data/
 *.db
 *.db-journal
+
+# Coverage (pytest.ini forces --cov, so these are regenerated on every test run)
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+
+# Local virtualenvs
+.venv/
+
+# SpecStory session transcripts. These were previously tracked; they are untracked
+# as of this commit (`git rm -r --cached .specstory`). Note that adding a path here
+# does not untrack files already in the index -- that step is required separately.
+.specstory/

@@ -14,6 +14,12 @@ YELLOW_KING = 2
 BLUE = 3
 BLUE_KING = 4
 
+# Sentinel used only inside the multi-capture search. Under Russian/Ukrainian
+# rules ("Turkish strike") a captured piece stays on the board as a blocker
+# until the whole capture sequence ends: it may not be jumped over again, and
+# it may not be landed on. It is never written to a real board.
+CAPTURED = -1
+
 # Backward compatibility aliases (deprecated, use YELLOW/BLUE)
 WHITE = YELLOW
 WHITE_KING = YELLOW_KING
@@ -77,10 +83,15 @@ class CheckersEngine:
         new_piece: int,
         captured_pos: int,
     ) -> Tuple[int, ...]:
-        """Return a new board after applying a single-hop capture."""
+        """Return a new board after applying a single-hop capture.
+
+        The captured square is marked CAPTURED rather than EMPTY: it remains a
+        blocker for the rest of the sequence (Turkish strike rule). to_pos is
+        written last so a sequence returning to its own origin keeps the piece.
+        """
         b = list(board)
         b[from_pos] = EMPTY
-        b[captured_pos] = EMPTY
+        b[captured_pos] = CAPTURED
         b[to_pos] = new_piece
         return tuple(b)
 
@@ -118,6 +129,8 @@ class CheckersEngine:
                     p = board[CheckersEngine.coords_to_pos(r, c)]
                     if p == EMPTY:
                         continue
+                    if p == CAPTURED:
+                        break  # already captured this move: blocks, cannot be taken again
                     p_color = CheckersEngine.piece_color(p)
                     if p_color == color:
                         break  # blocked by own piece
@@ -356,7 +369,32 @@ class CheckersEngine:
         """Check if piece is a king."""
         return piece in (YELLOW_KING, BLUE_KING)
 
-    def get_legal_single_hop_moves(self, pending_pos: Optional[int] = None) -> List[Move]:
+    def board_with_sequence_blockers(
+        self, captured_so_far: Optional[Sequence[int]] = None
+    ) -> Tuple[int, ...]:
+        """
+        Board tuple with squares captured earlier in the *current, unfinished* capture
+        sequence restored as CAPTURED blockers.
+
+        apply_move clears captured squares to EMPTY on the real board, so interactive
+        hop-by-hop play would otherwise let a king fly back through a square it just
+        captured -- the exact line the search (which keeps the sentinel) already ruled
+        out. Every entry point that continues a sequence must rebuild the blockers here
+        so the walked line matches the enumerated one.
+        """
+        if not captured_so_far:
+            return tuple(self.board)
+        b = list(self.board)
+        for pos in captured_so_far:
+            if isinstance(pos, int) and 0 <= pos < 64 and b[pos] == EMPTY:
+                b[pos] = CAPTURED
+        return tuple(b)
+
+    def get_legal_single_hop_moves(
+        self,
+        pending_pos: Optional[int] = None,
+        captured_so_far: Optional[Sequence[int]] = None,
+    ) -> List[Move]:
         """
         Get legal *single-step* moves for the current player, applying best-capture rules.
 
@@ -367,8 +405,11 @@ class CheckersEngine:
         - If any capture exists: return only capture hops that lead to the globally best line
           (max total captures, then max kings captured).
         - Otherwise: return normal non-capturing moves.
+
+        captured_so_far lists the squares already captured in an in-progress sequence; they
+        stay on the board as blockers (Turkish strike) for the rest of the move.
         """
-        board_state = tuple(self.board)
+        board_state = self.board_with_sequence_blockers(captured_so_far)
         color = self.current_turn
 
         if pending_pos is not None:
@@ -895,18 +936,25 @@ class CheckersEngine:
         
         return single_hops
     
-    def must_continue_capturing(self, pos: int) -> bool:
+    def must_continue_capturing(
+        self, pos: int, captured_so_far: Optional[Sequence[int]] = None
+    ) -> bool:
         """
         Check if piece at position has mandatory continuation captures.
         Used after a capture to determine if player must continue.
-        
+
         Args:
             pos: Position to check
-            
+            captured_so_far: squares already captured in this sequence; they remain
+                blockers under the Turkish strike rule and must be passed, or the
+                continuation search will offer lines the move enumerator forbids.
+
         Returns:
             True if piece must continue capturing
         """
-        continuation = self.get_legal_single_hop_moves(pending_pos=pos)
+        continuation = self.get_legal_single_hop_moves(
+            pending_pos=pos, captured_so_far=captured_so_far
+        )
         return len(continuation) > 0
     
     def apply_move(self, move: Move) -> bool:
@@ -922,14 +970,14 @@ class CheckersEngine:
         if piece == EMPTY:
             return False
         
-        # Move the piece
-        self.board[move.to_pos] = piece
+        # Clear the origin and every captured square *before* placing the piece.
+        # A capture sequence may end on its own starting square (circular king
+        # capture); writing to_pos last keeps the moving piece in that case.
         self.board[move.from_pos] = EMPTY
-        
-        # Remove captured pieces
         for cap_pos in move.captures:
             self.board[cap_pos] = EMPTY
-        
+        self.board[move.to_pos] = piece
+
         # Handle promotion
         # Promote if: reached king row at end, OR promoted during multi-capture
         to_row, _ = self.pos_to_coords(move.to_pos)
@@ -968,16 +1016,13 @@ class CheckersEngine:
         if blue_count == 0:
             return YELLOW
         
-        # Check legal moves for BOTH players
-        yellow_moves = self.get_legal_moves(YELLOW)
-        blue_moves = self.get_legal_moves(BLUE)
-        
-        # If a player has no legal moves, they lose
-        if not yellow_moves:
-            return BLUE
-        if not blue_moves:
-            return YELLOW
-        
+        # A player loses only when they have no legal move ON THEIR OWN TURN.
+        # Checking the side that is not to move ends the game a ply early: the
+        # player to move may well unblock them (and with captures mandatory,
+        # may be forced to).
+        if not self.get_legal_moves(self.current_turn):
+            return BLUE if self.current_turn == YELLOW else YELLOW
+
         return None
     
     def get_board_state(self) -> dict:

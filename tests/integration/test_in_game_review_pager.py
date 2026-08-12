@@ -43,7 +43,7 @@ class TestInGameReviewPager:
         query.data = "review_0"
         query.inline_message_id = None
         query.from_user = Mock()
-        query.from_user.id = 111  # player
+        query.from_user.id = 222  # the player to move (current_turn is YELLOW)
         query.answer = AsyncMock()
         query.message = Mock()
         query.message.chat = Mock()
@@ -109,5 +109,56 @@ class TestInGameReviewPager:
 
         # Should not attempt to edit message.
         assert mock_context.bot.edit_message_text.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_review_callback_rejects_player_not_on_turn_in_shared_game(
+        self, game_repository, mock_context
+    ):
+        """A group/inline game has ONE shared message: opening the review pager
+        replaces the board for both players. Only the player to move may do it,
+        or the waiting player can strip the opponent's move squares at will."""
+        handlers = GameHandlers(game_repository)
+
+        engine = CheckersEngine()
+        game_state = {
+            "board": engine.board.copy(),
+            "initial_board": engine.board.copy(),
+            "current_turn": YELLOW,
+            "blue_player_id": 111,
+            "blue_player_name": "Blue",
+            "yellow_player_id": 222,
+            "yellow_player_name": "Yellow",
+            "move_count": 1,
+            "move_history": [
+                {
+                    "from": 10,
+                    "to": 14,
+                    "captures": [],
+                    "board_before": engine.board.copy(),
+                    "player": "yellow",
+                }
+            ],
+        }
+        assert game_repository.save_game(12345, 1, game_state) is True
+
+        query = Mock()
+        query.data = "review_0"
+        query.inline_message_id = None
+        query.from_user = Mock()
+        query.from_user.id = 111  # a player, but it is YELLOW's (222's) turn
+        query.answer = AsyncMock()
+        query.message = Mock()
+        query.message.chat = Mock()
+        query.message.chat.id = 12345
+        query.message.message_id = 1
+
+        update = Mock()
+        update.callback_query = query
+
+        await handlers.review_callback(update, mock_context)
+
+        # The shared board must be left alone.
+        assert mock_context.bot.edit_message_text.await_count == 0
+        query.answer.assert_awaited()
 
 

@@ -15,6 +15,7 @@ from telegram.ext import (
 )
 
 from repository import GameRepository
+from handler_registry import register_handlers
 from handlers import GameHandlers
 from ratings import RatingSystem
 from game_data import GameDataRepository
@@ -33,6 +34,9 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
+# See main.py: httpx logs the full Telegram API URL, which embeds the bot token.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
@@ -122,37 +126,10 @@ def main():
     application.bot_data["rating_system"] = rating_system
     application.bot_data["game_data_repo"] = game_data_repo
     
-    # Register command handlers
-    application.add_handler(CommandHandler("checkersplay", handlers.start_command))
-    application.add_handler(CommandHandler("checkersreplay", handlers.replay_command))
-    application.add_handler(CommandHandler("myrating", handlers.myrating_command))
-    application.add_handler(CommandHandler("ratings", handlers.ratings_command))
-    application.add_handler(CommandHandler("resetrankings", handlers.reset_rankings_command))  # Hidden admin command
-    application.add_handler(CommandHandler("addlegend", handlers.add_legend_command))  # Hidden arcade mode command
-    application.add_handler(CommandHandler("blockcheckers", handlers.blockcheckers_command))  # Hidden admin command
-    application.add_handler(CommandHandler("unblockcheckers", handlers.unblockcheckers_command))  # Hidden admin command
-    
-    # Register callback handlers
-    application.add_handler(CallbackQueryHandler(handlers.confirm_cancel_callback, pattern="^confirm_cancel_"))
-    application.add_handler(CallbackQueryHandler(handlers.confirm_forfeit_callback, pattern="^confirm_forfeit_"))
-    application.add_handler(CallbackQueryHandler(handlers.abort_forfeit_callback, pattern="^abort_forfeit_"))
-    application.add_handler(CallbackQueryHandler(handlers.confirm_restart_callback, pattern="^confirm_restart_token_"))
-    application.add_handler(CallbackQueryHandler(handlers.restart_abort_callback, pattern="^restart_abort_token_"))
-    application.add_handler(CallbackQueryHandler(handlers.cancel_abort_callback, pattern="^cancel_abort$"))
-    application.add_handler(CallbackQueryHandler(handlers.join_callback, pattern="^join$"))
-    application.add_handler(CallbackQueryHandler(handlers.cancel_invite_callback, pattern="^cancel_invite$"))
-    application.add_handler(CallbackQueryHandler(handlers.select_callback, pattern="^select_"))
-    application.add_handler(CallbackQueryHandler(handlers.move_callback, pattern="^move_"))
-    application.add_handler(
-        CallbackQueryHandler(handlers.draw_callback, pattern="^draw_(offer|accept|decline)$")
-    )
-    application.add_handler(CallbackQueryHandler(handlers.back_callback, pattern="^back$"))
-    application.add_handler(CallbackQueryHandler(handlers.forfeit_callback, pattern="^forfeit$"))
-    application.add_handler(CallbackQueryHandler(handlers.new_game_callback, pattern="^new_game$"))
-    application.add_handler(CallbackQueryHandler(handlers.replay_game_callback, pattern="^replay_"))
-    application.add_handler(CallbackQueryHandler(handlers.noop_callback, pattern="^noop_"))
-    application.add_handler(CallbackQueryHandler(handlers.ratings_page_callback, pattern="^ratings_page_"))
-    
+    # Register every command / inline / callback handler from the shared table,
+    # so polling-mode development exercises exactly what webhook mode serves.
+    register_handlers(application, handlers)
+
     # Start POLLING mode (no webhook needed)
     logger.info("Starting bot in POLLING mode...")
     logger.info("Bot is ready! Send /checkersplay to start a game.")

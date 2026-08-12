@@ -822,8 +822,14 @@ class RatingSystem:
                 if move_count > 0 and (winner_fastest is None or int(move_count) < int(winner_fastest)):
                     winner_fastest = int(move_count)
 
-                loser_longest = loser.get("longest_game") or 0
-                loser_longest = int(loser_longest)
+                # longest_game counts the longest game PLAYED, not the longest lost --
+                # record_draw already advances it for both players, so recording the
+                # same game as a win must too, or the stat depends on the result.
+                winner_longest = int(winner.get("longest_game") or 0)
+                if move_count and int(move_count) > winner_longest:
+                    winner_longest = int(move_count)
+
+                loser_longest = int(loser.get("longest_game") or 0)
                 if move_count and int(move_count) > loser_longest:
                     loser_longest = int(move_count)
 
@@ -863,13 +869,23 @@ class RatingSystem:
                     winner_games_month = int(winner.get("games_this_month", 0) or 0) + 1
                     winner_rating_gain_month = int(winner.get("rating_gain_this_month", 0) or 0) + winner_change
 
-                # Reset daily counter if new day
-                if winner_last_played is None or winner_last_played != today:
+                # Reset daily counter if new day. Same rule as record_draw's
+                # compute_counters: a gap of exactly one day *extends* the
+                # streak, it does not restart it at 1.
+                if winner_last_played is None:
                     winner_games_today = 1
-                    winner_consecutive_days = 1 if winner_last_played is None or (today - winner_last_played).days == 1 else 0
+                    winner_consecutive_days = 1
                 else:
-                    winner_games_today = int(winner.get("games_today", 0) or 0) + 1
-                    winner_consecutive_days = int(winner.get("consecutive_days", 0) or 0)
+                    winner_delta_days = (today - winner_last_played).days
+                    if winner_delta_days == 0:
+                        winner_games_today = int(winner.get("games_today", 0) or 0) + 1
+                        winner_consecutive_days = int(winner.get("consecutive_days", 0) or 0) or 1
+                    elif winner_delta_days == 1:
+                        winner_games_today = 1
+                        winner_consecutive_days = int(winner.get("consecutive_days", 0) or 0) + 1
+                    else:
+                        winner_games_today = 1
+                        winner_consecutive_days = 1
 
                 # Update wins by color
                 winner_wins_yellow = int(winner.get("wins_as_yellow", 0) or 0)
@@ -908,13 +924,23 @@ class RatingSystem:
                     loser_games_month = int(loser.get("games_this_month", 0) or 0) + 1
                     loser_rating_gain_month = int(loser.get("rating_gain_this_month", 0) or 0) + loser_change
 
-                # Reset daily counter if new day
-                if loser_last_played is None or loser_last_played != today:
+                # Reset daily counter if new day. consecutive_days tracks days
+                # *played*, not days won, so it advances for the loser too --
+                # zeroing it here made every streak achievement unreachable.
+                if loser_last_played is None:
                     loser_games_today = 1
-                    loser_consecutive_days = 0  # Loser doesn't get consecutive days
+                    loser_consecutive_days = 1
                 else:
-                    loser_games_today = int(loser.get("games_today", 0) or 0) + 1
-                    loser_consecutive_days = int(loser.get("consecutive_days", 0) or 0)
+                    loser_delta_days = (today - loser_last_played).days
+                    if loser_delta_days == 0:
+                        loser_games_today = int(loser.get("games_today", 0) or 0) + 1
+                        loser_consecutive_days = int(loser.get("consecutive_days", 0) or 0) or 1
+                    elif loser_delta_days == 1:
+                        loser_games_today = 1
+                        loser_consecutive_days = int(loser.get("consecutive_days", 0) or 0) + 1
+                    else:
+                        loser_games_today = 1
+                        loser_consecutive_days = 1
 
                 # Loser perfect streak resets
                 loser_perfect_streak = 0
@@ -934,6 +960,7 @@ class RatingSystem:
                         perfect_games = ?,
                         comeback_wins = ?,
                         fastest_win = ?,
+                        longest_game = ?,
                         games_this_week = ?,
                         games_this_month = ?,
                         last_game_date = ?,
@@ -960,6 +987,7 @@ class RatingSystem:
                     winner_perfect_games,
                     winner_comeback_wins,
                     winner_fastest,
+                    winner_longest,
                     winner_games_week,
                     winner_games_month,
                     today.isoformat(),
@@ -1056,6 +1084,9 @@ class RatingSystem:
             f"{'+' if loser_change >= 0 else ''}{loser_change}, K={get_k_factor(loser_games)})"
         )
 
+        # These dicts are fed straight to AchievementSystem.check_achievements as
+        # player_data, so every counter written above must be echoed back --
+        # splatting the pre-game row alone left them a full game out of date.
         return {
             **winner,
             "rating": new_winner_rating,
@@ -1066,6 +1097,23 @@ class RatingSystem:
             "best_streak": winner_best_streak,
             "best_rating": winner_best_rating,
             "peak_rank": winner_peak_rank,
+            "total_rating_gained": winner_total_gained,
+            "total_rating_lost": winner_total_lost,
+            "perfect_games": winner_perfect_games,
+            "comeback_wins": winner_comeback_wins,
+            "fastest_win": winner_fastest,
+            "longest_game": winner_longest,
+            "games_this_week": winner_games_week,
+            "games_this_month": winner_games_month,
+            "consecutive_days": winner_consecutive_days,
+            "games_today": winner_games_today,
+            "wins_as_yellow": winner_wins_yellow,
+            "wins_as_blue": winner_wins_blue,
+            "rating_gain_this_week": winner_rating_gain_week,
+            "rating_gain_this_month": winner_rating_gain_month,
+            "perfect_streak": winner_perfect_streak,
+            "last_played_date": today.isoformat(),
+            "last_game_date": today.isoformat(),
             "rank_changed": rank_changed,
             "new_rank": new_winner_rank if rank_changed else None,
         }, {
@@ -1075,6 +1123,18 @@ class RatingSystem:
             "games_played": loser_games + 1,
             "losses": int(loser.get("losses", 0) or 0) + 1,
             "current_streak": loser_streak,
+            "total_rating_gained": loser_total_gained,
+            "total_rating_lost": loser_total_lost,
+            "longest_game": loser_longest,
+            "games_this_week": loser_games_week,
+            "games_this_month": loser_games_month,
+            "consecutive_days": loser_consecutive_days,
+            "games_today": loser_games_today,
+            "rating_gain_this_week": loser_rating_gain_week,
+            "rating_gain_this_month": loser_rating_gain_month,
+            "perfect_streak": loser_perfect_streak,
+            "last_played_date": today.isoformat(),
+            "last_game_date": today.isoformat(),
         }
     
     async def get_leaderboard(self, limit: int = 15, offset: int = 0) -> tuple[list, int]:

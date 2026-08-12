@@ -23,10 +23,14 @@ class TestCommandHandlers:
         # Mock private chat
         mock_update.effective_chat.type = "private"
         
+        # _is_user_blocked needs a real int id, not a Mock, or the handler
+        # early-returns and this test silently asserts nothing.
+        mock_update.effective_user.id = 4242
+
         await handlers.start_bot_command(mock_update, mock_context)
-        
+
         # Should send menu
-        assert mock_update.effective_message.reply_text.called or True
+        assert mock_update.effective_message.reply_text.called
 
     @pytest.mark.asyncio
     async def test_menu_button_text_handler(self, game_repository: GameRepository, mock_update: Mock, mock_context: Mock):

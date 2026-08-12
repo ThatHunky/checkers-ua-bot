@@ -1,0 +1,26 @@
+# Reverse-proxy config for the Telegram webhook endpoint.
+#
+# Caddy runs on the HOST (systemd `caddy.service`), not as a compose service --
+# compose.yaml defines only `bot` and `redis`. The bot publishes its port on the
+# loopback interface only (`127.0.0.1:8787:8787`), so the host Caddy reaches it at
+# localhost and nothing else on the network can.
+#
+# Install:
+#   sudo cp Caddyfile /etc/caddy/Caddyfile     # or append this block to the existing one
+#   sudo caddy validate --config /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+#
+# Caddy obtains and renews the certificate automatically, so ports 80 and 443 must
+# be reachable from the internet and the domain's A/AAAA records must point here.
+#
+# Do NOT use `reverse_proxy bot:8787`: that container hostname only resolves from
+# inside the compose network, and there is no caddy service in it.
+
+checkers.dobrovolskyi.com.ua {
+	reverse_proxy localhost:8787 {
+		header_up Host {host}
+		header_up X-Real-IP {remote}
+		header_up X-Forwarded-For {remote}
+		header_up X-Forwarded-Proto {scheme}
+	}
+}

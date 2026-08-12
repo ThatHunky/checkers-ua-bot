@@ -1,6 +1,19 @@
 #!/usr/bin/env python3
 """
-Comprehensive edge case tests for check_winner function.
+DIAGNOSTIC SCRIPT -- not a test, and not collected by pytest.
+
+Renamed out of `test_check_winner_edge_cases.py`: the `test_` prefix made it
+look like enforced coverage while `testpaths = tests` excluded it, and its
+expectations are UNTRIAGED. Several encode rules the engine does not implement
+(scenarios 24 and 25, for instance, asserted that a player blocked on the
+*opponent's* turn has already lost -- which was a bug, now fixed). Run it by
+hand for exploration; do not read a failure here as a regression without first
+checking the scenario against the rules.
+
+Enforced coverage of these behaviours lives in
+`tests/unit/test_engine_capture_rules.py`.
+
+Comprehensive edge case scenarios for the check_winner function.
 Tests all possible scenarios where a game can end or continue.
 """
 

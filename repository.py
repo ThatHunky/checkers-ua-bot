@@ -126,16 +126,17 @@ class GameRepository:
         """
         games = []
         try:
+            key_prefix = "checkers:inline_game:"
             # Scan for all inline game keys
-            for key in self.redis_client.scan_iter("checkers:inline_game:*"):
+            for key in self.redis_client.scan_iter(f"{key_prefix}*"):
                 value = self.redis_client.get(key)
                 if value:
                     # Parse key: checkers:inline_game:{inline_message_id}
-                    parts = key.split(":")
-                    if len(parts) == 3:
-                        inline_message_id = parts[2]
-                        game_state = json.loads(value)
-                        games.append((inline_message_id, game_state))
+                    if key.startswith(key_prefix):
+                        inline_message_id = key[len(key_prefix):]
+                        if inline_message_id:
+                            game_state = json.loads(value)
+                            games.append((inline_message_id, game_state))
         except Exception as e:
             logger.error(f"Error getting all inline games: {e}")
         return games
@@ -486,8 +487,21 @@ class GameRepository:
 
         existing = self.redis_client.hgetall(ticket_key)
         if existing and existing.get("status") == "queued":
-            # Normalize return shape for callers/tests.
-            return {**existing, "user_id": user_id}
+            if existing.get("mode") == mode:
+                # Normalize return shape for callers/tests.
+                return {**existing, "user_id": user_id}
+            # Different mode requested: re-queue instead of silently keeping the
+            # old ticket, or the player is matched under a mode the UI has
+            # already told them they left.
+            previous_mode = existing.get("mode")
+            if previous_mode:
+                self.redis_client.zrem(f"mm:queue:{previous_mode}", user_id)
+            else:
+                # Ticket without a mode: we cannot name the queue it is in, and
+                # zrem("mm:queue:None") would be a silent no-op that leaves the
+                # player queued twice. Clear every known queue instead.
+                for known_mode in ("rated", "casual", "practice"):
+                    self.redis_client.zrem(f"mm:queue:{known_mode}", user_id)
 
         # Store strings in Redis, but return typed values to callers.
         ticket_store = {

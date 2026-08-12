@@ -34,24 +34,42 @@ class AchievementSystem:
         if reset_script.exists():
             try:
                 module = ast.parse(reset_script.read_text(encoding="utf-8"))
-                for node in module.body:
-                    if isinstance(node, ast.Assign):
-                        for target in node.targets:
-                            if isinstance(target, ast.Name) and target.id == "achievements":
-                                value = ast.literal_eval(node.value)
-                                # Expected shape: list[tuple[str, str, str, str, str, str, str, int]]
-                                if isinstance(value, list) and value and isinstance(value[0], tuple):
-                                    return value
             except Exception:
-                # Fall through to minimal catalog
-                pass
+                logger.exception("Failed to parse achievements catalog from %s", reset_script)
+            else:
+                # ast.walk, not module.body: the catalog is assigned inside
+                # populate_achievements(), so a top-level-only scan never finds
+                # it and silently seeds the fallback below.
+                for node in ast.walk(module):
+                    if not isinstance(node, ast.Assign):
+                        continue
+                    if not any(
+                        isinstance(t, ast.Name) and t.id == "achievements"
+                        for t in node.targets
+                    ):
+                        continue
+                    # Per-node try: a non-literal `achievements = ...` anywhere in the
+                    # file must not abort the scan before the real catalog is reached.
+                    try:
+                        value = ast.literal_eval(node.value)
+                    except Exception:
+                        continue
+                    # Expected shape: list[tuple[str, str, str, str, str, str, str, int]]
+                    if isinstance(value, list) and value and isinstance(value[0], tuple):
+                        return value
 
-        return [
+        fallback = [
             ("first_steps", "First Steps", "Перші Кроки", "Play your first game", "Зіграйте свою першу гру", "🌱", "milestone", 1),
             ("first_victory", "First Victory", "Перша Перемога", "Win your first game", "Виграйте свою першу гру", "🏆", "milestone", 1),
             ("victory_lightning", "Lightning Victory", "Блискавка", "Win a game in under 25 moves", "Виграйте гру менше ніж за 25 ходів", "⚡", "victory", 25),
             ("victory_hurricane", "Hurricane", "Ураган", "Win a game in under 20 moves", "Виграйте гру менше ніж за 20 ходів", "💨", "victory", 20),
         ]
+        logger.warning(
+            "Achievements catalog unavailable at %s; seeding minimal fallback (%d entries)",
+            reset_script,
+            len(fallback),
+        )
+        return fallback
 
     async def initialize(self) -> None:
         """

@@ -1,0 +1,51 @@
+# Secrets: `COPY . .` would otherwise bake .env -- the live bot token and
+# ADMIN_ID -- into an immutable image layer, readable by anyone who can pull
+# or `docker save` the image. The token is supplied at runtime via env_file.
+.env
+.env.*
+!.env.example
+
+# VCS and editor/session history
+.git
+.gitignore
+.gitattributes
+.specstory
+.cursor
+.cursorignore
+
+# Local databases and backups. The real ones live on the /data volume.
+*.db
+*.db-journal
+*.backup.*
+data/
+
+# Tests and coverage artifacts
+tests/
+test_*.py
+pytest.ini
+.pytest_cache
+htmlcov/
+.coverage
+.coverage.*
+
+# Python caches and local virtualenvs
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Deployment/tooling files not needed inside the container
+compose.yaml
+Containerfile
+Caddyfile*
+docs/
+*.md
+
+# Large unreferenced asset (5.3 MB, not used at runtime)
+checker_ua_icon.png
+
+# NOTE: scripts/ is deliberately NOT excluded -- achievements.py reads
+# scripts/reset_database.py at startup to load the achievement catalog.

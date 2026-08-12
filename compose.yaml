@@ -6,15 +6,33 @@ services:
     env_file:
       - .env
     ports:
-      - "192.168.1.50:8787:8787"
+      - "127.0.0.1:8787:8787"  # Expose to localhost for host Caddy to access
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     restart: always
     networks:
       - checkers_network
     volumes:
       - /mnt/ssd1/checkers_data:/data # SSD storage: ratings.db persisted here
       - .:/app # Mount source code for hot-reloading
+    healthcheck:
+      # Only webhook mode binds a socket. Probing the port unconditionally left a
+      # polling-mode container permanently `unhealthy` (restart: always does not
+      # react to health, so it never recovered). PORT is read from the env so the
+      # probe follows the .env rather than a second hardcoded copy of it.
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import os,socket,sys;
+          sys.exit(0) if os.getenv('USE_WEBHOOK','false').lower() != 'true' else None;
+          s=socket.socket(); s.settimeout(1);
+          rc=s.connect_ex(('127.0.0.1', int(os.getenv('PORT','8787')))); s.close();
+          sys.exit(0 if rc == 0 else 1)"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   redis:
     image: docker.io/redis:alpine # Fully qualified for Podman
@@ -23,6 +41,12 @@ services:
       - redis_data:/data
     networks:
       - checkers_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
 
 volumes:
   redis_data:

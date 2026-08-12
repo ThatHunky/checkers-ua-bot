@@ -190,6 +190,97 @@ class GameHandlers:
         row = 8 - (pos // 8)
         return f"{col}{row}"
 
+    @staticmethod
+    def _to_int(value) -> Optional[int]:
+        """Safely parse an integer value, returning None on failure."""
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _build_inline_callback_data(
+        prefix: str,
+        creator_id: int,
+        mode: str,
+        target_user_id: Optional[int] = None,
+    ) -> str:
+        """Build compact callback_data payload for inline challenge actions."""
+        parts = [prefix, str(int(creator_id)), locales.normalize_mode(mode)]
+        if target_user_id is not None:
+            parts.append(str(int(target_user_id)))
+        return ":".join(parts)
+
+    @staticmethod
+    def _parse_inline_callback_data(
+        callback_data: Optional[str],
+        expected_prefix: str,
+    ) -> Tuple[Optional[int], Optional[str], Optional[int]]:
+        """
+        Parse callback_data encoded as:
+          expected_prefix:creator_id:mode[:target_user_id]
+        """
+        if not callback_data:
+            return None, None, None
+
+        parts = callback_data.split(":")
+        if len(parts) < 3 or parts[0] != expected_prefix:
+            return None, None, None
+
+        creator_id = GameHandlers._to_int(parts[1])
+        mode = locales.normalize_mode(parts[2]) if parts[2] else None
+        target_user_id = GameHandlers._to_int(parts[3]) if len(parts) >= 4 else None
+        return creator_id, mode, target_user_id
+
+    def _build_inline_challenge_from_callback_payload(
+        self,
+        inline_message_id: str,
+        creator_id: Optional[int],
+        mode: Optional[str],
+        target_user_id: Optional[int] = None,
+    ) -> Optional[dict]:
+        """Build challenge data from callback payload when storage entry is missing.
+
+        The payload carries no timestamp, so a button from a message posted months ago
+        is indistinguishable from one whose record was merely evicted. Rebuilding is
+        still worth it -- it keeps a challenge usable across a bot restart -- but the
+        rebuilt game is forced UNRATED: otherwise a stranger tapping an old button
+        enrolls the (absent) creator in a rated game, and the timeout job then deducts
+        their ELO for a game they never saw. A live challenge record keeps its mode.
+        """
+        if creator_id is None:
+            return None
+
+        creator_user_data = self.repo.get_user_by_id(creator_id) or {}
+        creator_username = creator_user_data.get("username")
+        creator_name = (
+            creator_user_data.get("first_name")
+            or creator_username
+            or "Гравець"
+        )
+
+        requested_mode = locales.normalize_mode(mode or "casual")
+        if requested_mode == "rated":
+            logger.info(
+                "[inline_challenge] rebuilt challenge downgraded rated->casual "
+                "inline_message_id=%s creator=%s",
+                inline_message_id,
+                creator_id,
+            )
+            requested_mode = "casual"
+
+        challenge_data = {
+            "creator_id": int(creator_id),
+            "creator_name": creator_name,
+            "creator_username": creator_username,
+            "inline_message_id": inline_message_id,
+            "mode": requested_mode,
+            "lazy_created": True,
+        }
+        if target_user_id is not None:
+            challenge_data["target_user_id"] = int(target_user_id)
+        return challenge_data
+
     # ------------------------------------------------------------------
     # High-level menu + matchmaking helpers (lightweight implementations)
     # ------------------------------------------------------------------
@@ -609,7 +700,7 @@ class GameHandlers:
 
         # If the inline query is empty or "play"/"start", show challenge options for different modes
         if not query_text or query_text in ("play", "start", "гра", "почати"):
-            user_name = user.first_name or user.username or "Гравець"
+            user_name = html.escape(user.first_name or user.username or "Гравець")
             
             # Casual mode (default)
             casual_msg = locales.INLINE_CHALLENGE_MSG.format(name=user_name)
@@ -624,7 +715,11 @@ class GameHandlers:
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton(
                         locales.INLINE_CHALLENGE_JOIN,
-                        callback_data="inline_challenge_join"
+                        callback_data=self._build_inline_callback_data(
+                            "inline_challenge_join",
+                            user.id,
+                            "casual",
+                        ),
                     )
                 ]])
             )
@@ -642,7 +737,11 @@ class GameHandlers:
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton(
                         locales.INLINE_CHALLENGE_JOIN,
-                        callback_data="inline_challenge_join"
+                        callback_data=self._build_inline_callback_data(
+                            "inline_challenge_join",
+                            user.id,
+                            "rated",
+                        ),
                     )
                 ]])
             )
@@ -660,7 +759,11 @@ class GameHandlers:
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton(
                         locales.INLINE_CHALLENGE_JOIN,
-                        callback_data="inline_challenge_join"
+                        callback_data=self._build_inline_callback_data(
+                            "inline_challenge_join",
+                            user.id,
+                            "practice",
+                        ),
                     )
                 ]])
             )
@@ -683,15 +786,24 @@ class GameHandlers:
         if username:
             # Check if user exists
             opponent_info = self.repo.get_user_by_username(username)
-            if opponent_info:
+            target_user_id = self._to_int(opponent_info.get("user_id")) if opponent_info else None
+            # Fail closed: without a usable id the "only the named user may accept"
+            # guard cannot be encoded, and offering the result anyway would publish a
+            # challenge that reads as targeted but that anyone can take.
+            if opponent_info and target_user_id is not None:
+                creator_name = html.escape(user.first_name or user.username or "Гравець")
+                safe_username = html.escape(username)
                 challenge_msg = (
-                    f"🎮 <b>{user.first_name or user.username or 'Гравець'}</b> викликає "
-                    f"<b>@{username}</b> на гру в Українські Шашки!"
+                    f"🎮 <b>{creator_name}</b> викликає "
+                    f"<b>@{safe_username}</b> на гру в Українські Шашки!"
                 )
                 results = [
                     InlineQueryResultArticle(
-                        id=f"challenge_{username}",
-                        title=f"🎮 Викликати @{username}",
+                        # Distinct prefix: "challenge_{username}" collided with the
+                        # fixed mode ids, so challenging @casual/@ranked/@practice
+                        # parsed as a mode and silently dropped the opponent lock.
+                        id=f"challengeuser_{username}",
+                        title=f"🎮 Викликати @{safe_username}",
                         description=f"Викликати {opponent_info.get('first_name', username)} на гру",
                         input_message_content=InputTextMessageContent(
                             challenge_msg,
@@ -700,7 +812,12 @@ class GameHandlers:
                         reply_markup=InlineKeyboardMarkup([[
                             InlineKeyboardButton(
                                 "✅ Прийняти виклик",
-                                callback_data="accept_inline"
+                                callback_data=self._build_inline_callback_data(
+                                    "accept_inline",
+                                    user.id,
+                                    "casual",
+                                    target_user_id=target_user_id,
+                                ),
                             )
                         ]])
                     )
@@ -777,7 +894,14 @@ class GameHandlers:
         # Parse mode from result_id: challenge, challenge_casual, challenge_ranked, challenge_practice
         if result_id.startswith("challenge") and inline_message_id:
             # Extract mode from result_id
-            if result_id == "challenge" or result_id == "challenge_casual":
+            target_username = None
+            target_user_id = None
+            # Targeted challenges use their own "challengeuser_" prefix so a user
+            # named @casual/@ranked/@practice cannot be parsed as a mode.
+            if result_id.startswith("challengeuser_"):
+                mode = "casual"
+                target_username = result_id.removeprefix("challengeuser_").lstrip("@")
+            elif result_id == "challenge" or result_id == "challenge_casual":
                 mode = "casual"
             elif result_id == "challenge_ranked":
                 # Canonical internal name is "rated" (historically also used "ranked")
@@ -787,6 +911,11 @@ class GameHandlers:
             else:
                 # Default to casual for backward compatibility
                 mode = "casual"
+
+            if target_username:
+                opponent_info = self.repo.get_user_by_username(target_username)
+                if opponent_info:
+                    target_user_id = self._to_int(opponent_info.get("user_id"))
             
             challenge_data = {
                 "creator_id": user.id,
@@ -795,6 +924,10 @@ class GameHandlers:
                 "inline_message_id": inline_message_id,
                 "mode": mode
             }
+            if target_username:
+                challenge_data["target_username"] = target_username
+            if target_user_id is not None:
+                challenge_data["target_user_id"] = target_user_id
             
             # (debug log removed)
             
@@ -1049,6 +1182,22 @@ class GameHandlers:
                 return
 
             data = (query.data or "").strip()
+
+            # In group and inline games both players share ONE message, so the
+            # review pager replaces the opponent's board and leaves them with no
+            # squares to click. Restrict opening it to the player to move --
+            # otherwise the waiting player can stall a losing position forever.
+            # Private matches give each player their own message, so they are
+            # unaffected. "Back to live" is always allowed: it restores the board.
+            if (
+                data != "review_live"
+                and not game_state.get("is_private_match")
+                and not self._validate_player_turn(user_id, game_state)
+            ):
+                await query.answer(
+                    "❌ Переглядати ходи можна лише під час свого ходу.", show_alert=True
+                )
+                return
             if data == "review_live":
                 # Render live view for THIS message only (do not force-update the other player's message in private matches).
                 engine = CheckersEngine()
@@ -1334,47 +1483,80 @@ class GameHandlers:
             )
 
             # (debug log removed)
+            payload_creator_id, payload_mode, payload_target_user_id = (
+                self._parse_inline_callback_data(query.data, "inline_challenge_join")
+            )
+
+            # Refuse if a game is already running on this inline message. The
+            # challenge record alone is not a sufficient guard: it is deleted
+            # once the game starts and then rebuilt from the button's own
+            # callback_data below, so without this a stale (or double-tapped)
+            # Join resets a live board and ejects the player in the game.
+            if self.repo.get_inline_game(inline_message_id):
+                await query.answer(
+                    locales.INLINE_CHALLENGE_ALREADY_STARTED, show_alert=True
+                )
+                return
 
             # Get challenge data
             challenge = self.repo.get_inline_challenge(inline_message_id)
-            
+
             # (debug log removed)
-            
+
             if not challenge:
-                # Try lazy creation - if this is a challenge message, create challenge on first click
-                logger.info("[inline_challenge:join] challenge not found, attempting lazy creation inline_message_id=%s user=%s", 
-                           inline_message_id, query.from_user.id)
-                
-                # Create challenge with first clicker as creator
-                challenge_data = {
-                    "creator_id": query.from_user.id,
-                    "creator_name": query.from_user.first_name or query.from_user.username or "Гравець",
-                    "creator_username": query.from_user.username,
-                    "inline_message_id": inline_message_id,
-                    "mode": "casual",
-                    "lazy_created": True  # Flag to indicate this was created lazily
-                }
-                
-                # (debug log removed)
-                
-                # Save the challenge
-                save_result = self.repo.save_inline_challenge(inline_message_id, challenge_data)
-                
-                # (debug log removed)
-                
+                challenge_data = self._build_inline_challenge_from_callback_payload(
+                    inline_message_id,
+                    payload_creator_id,
+                    payload_mode,
+                    target_user_id=payload_target_user_id,
+                )
+                if not challenge_data:
+                    logger.info(
+                        "[inline_challenge:join] challenge missing and callback payload incomplete inline_message_id=%s",
+                        inline_message_id,
+                    )
+                    await query.answer(locales.INLINE_CHALLENGE_NOT_FOUND, show_alert=True)
+                    return
+                save_result = self.repo.save_inline_challenge(
+                    inline_message_id, challenge_data
+                )
                 if save_result:
-                    logger.info("[inline_challenge:join] lazy challenge created inline_message_id=%s creator=%s", 
-                               inline_message_id, query.from_user.id)
+                    logger.info(
+                        "[inline_challenge:join] challenge restored from callback payload inline_message_id=%s creator=%s",
+                        inline_message_id,
+                        challenge_data.get("creator_id"),
+                    )
                     challenge = challenge_data
                 else:
-                    logger.error("[inline_challenge:join] failed to create lazy challenge inline_message_id=%s", 
-                                inline_message_id)
+                    logger.error(
+                        "[inline_challenge:join] failed to restore challenge inline_message_id=%s",
+                        inline_message_id,
+                    )
                     await query.answer(locales.INLINE_CHALLENGE_NOT_FOUND, show_alert=True)
                     return
 
-            creator_user_id = challenge.get("creator_id")
+            creator_user_id = self._to_int(challenge.get("creator_id"))
+            if creator_user_id is None:
+                logger.warning(
+                    "[inline_challenge:join] invalid creator_id inline_message_id=%s challenge=%s",
+                    inline_message_id,
+                    challenge,
+                )
+                await query.answer(locales.INLINE_CHALLENGE_NOT_FOUND, show_alert=True)
+                return
             
             # (debug log removed)
+
+            target_user_id = self._to_int(challenge.get("target_user_id"))
+            if target_user_id is not None and query.from_user.id != target_user_id:
+                logger.info(
+                    "[inline_challenge:join] wrong opponent blocked inline_message_id=%s user=%s expected=%s",
+                    inline_message_id,
+                    query.from_user.id,
+                    target_user_id,
+                )
+                await query.answer(locales.INLINE_CHALLENGE_WRONG_OPPONENT, show_alert=True)
+                return
             
             if query.from_user.id == creator_user_id:
                 logger.info("[inline_challenge:join] creator self-join blocked inline_message_id=%s user=%s", 
@@ -1385,8 +1567,8 @@ class GameHandlers:
             # Answer the callback query after validation
             await query.answer()
 
-            mode = locales.normalize_mode(challenge.get("mode", "casual"))
-            creator_name = challenge.get("creator_name", "Гравець")
+            mode = locales.normalize_mode(challenge.get("mode") or payload_mode or "casual")
+            creator_name = challenge.get("creator_name") or "Гравець"
             creator_username = challenge.get("creator_username")
             
             # Get first names from repository if available
@@ -1548,7 +1730,10 @@ class GameHandlers:
             if await self._maybe_confirm_restart_from_query(
                 query,
                 context=context,
-                intent={"type": "accept_inline"},
+                # The challenge payload lives in query.data, and the restart prompt
+                # replaces it with its own token before re-dispatching here. Carry the
+                # original button's data through the intent so it can be restored.
+                intent={"type": "accept_inline", "callback_data": query.data},
             ):
                 return
             
@@ -1567,18 +1752,71 @@ class GameHandlers:
                 callback_data,
                 inline_message_id,
             )
-            
+
+            payload_creator_id, payload_mode, payload_target_user_id = (
+                self._parse_inline_callback_data(callback_data, "accept_inline")
+            )
+
+            # See inline_challenge_join_callback: never replace a game that is
+            # already running on this inline message.
+            if self.repo.get_inline_game(inline_message_id):
+                await query.answer(
+                    locales.INLINE_CHALLENGE_ALREADY_STARTED, show_alert=True
+                )
+                return
+
             # Get challenge data
             challenge = self.repo.get_inline_challenge(inline_message_id)
-            
+
             if not challenge:
-                # Challenge not found - it may have expired or wasn't created yet
-                logger.info("[accept_inline] challenge not found inline_message_id=%s accepter=%s", 
-                           inline_message_id, accepter_user_id)
-                await query.answer("❌ Виклик не знайдено або вже закінчився.", show_alert=True)
-                return
+                challenge_data = self._build_inline_challenge_from_callback_payload(
+                    inline_message_id,
+                    payload_creator_id,
+                    payload_mode,
+                    target_user_id=payload_target_user_id,
+                )
+                if not challenge_data:
+                    # Challenge not found - it may have expired or wasn't created yet
+                    logger.info(
+                        "[accept_inline] challenge missing and callback payload incomplete inline_message_id=%s accepter=%s",
+                        inline_message_id,
+                        accepter_user_id,
+                    )
+                    await query.answer("❌ Виклик не знайдено або вже закінчився.", show_alert=True)
+                    return
+                save_result = self.repo.save_inline_challenge(
+                    inline_message_id, challenge_data
+                )
+                if not save_result:
+                    logger.info(
+                        "[accept_inline] failed to restore challenge inline_message_id=%s accepter=%s",
+                        inline_message_id,
+                        accepter_user_id,
+                    )
+                    await query.answer("❌ Виклик не знайдено або вже закінчився.", show_alert=True)
+                    return
+                challenge = challenge_data
             
-            creator_user_id = challenge.get("creator_id")
+            creator_user_id = self._to_int(challenge.get("creator_id"))
+            if creator_user_id is None:
+                logger.warning(
+                    "[accept_inline] invalid creator_id inline_message_id=%s challenge=%s",
+                    inline_message_id,
+                    challenge,
+                )
+                await query.answer(locales.INLINE_CHALLENGE_NOT_FOUND, show_alert=True)
+                return
+
+            target_user_id = self._to_int(challenge.get("target_user_id"))
+            if target_user_id is not None and accepter_user_id != target_user_id:
+                logger.info(
+                    "[accept_inline] wrong opponent blocked inline_message_id=%s user=%s expected=%s",
+                    inline_message_id,
+                    accepter_user_id,
+                    target_user_id,
+                )
+                await query.answer(locales.INLINE_CHALLENGE_WRONG_OPPONENT, show_alert=True)
+                return
             
             if accepter_user_id == creator_user_id:
                 logger.info("[accept_inline] creator self-join blocked inline_message_id=%s accepter=%s", 
@@ -1589,8 +1827,8 @@ class GameHandlers:
             # Answer the callback query after validation
             await query.answer()
             
-            mode = locales.normalize_mode(challenge.get("mode", "casual"))
-            creator_name = challenge.get("creator_name", "Гравець")
+            mode = locales.normalize_mode(challenge.get("mode") or payload_mode or "casual")
+            creator_name = challenge.get("creator_name") or "Гравець"
             creator_username = challenge.get("creator_username")
             
             # Get first names from repository if available
@@ -1865,7 +2103,7 @@ class GameHandlers:
             "🤝 Запрошення на гру у цій групі\n"
             f"Режим: <b>{locales.mode_label(mode)}</b>\n"
             f"<i>{locales.mode_note(mode)}</i>\n"
-            f"Створив: {query.from_user.first_name}\n"
+            f"Створив: {html.escape(query.from_user.first_name or '')}\n"
             f"Код: {code} (можна <code>/join {html.escape(code)}</code>)"
         )
         keyboard = InlineKeyboardMarkup(
@@ -2442,7 +2680,7 @@ class GameHandlers:
                     "🤝 Запрошення на гру у цій групі\n"
                     f"Режим: <b>{locales.mode_label(mode)}</b>\n"
                     f"<i>{locales.mode_note(mode)}</i>\n"
-                    f"Створив: {user.first_name}\n"
+                    f"Створив: {html.escape(user.first_name or '')}\n"
                     f"Код: {code} (можна <code>/join {html.escape(code)}</code>)"
                 )
                 keyboard = InlineKeyboardMarkup(
@@ -2459,6 +2697,12 @@ class GameHandlers:
                 await self.group_invite_join_callback(update, context)
             elif kind == "accept_inline":
                 # Reuse the existing inline accept handler on the same update/query.
+                # query.data is currently this prompt's confirm_restart_token_...; the
+                # accept handler parses it for the challenge payload, so put the
+                # original button's data back first (same as group_invite_join above).
+                original_data = intent.get("callback_data")
+                if original_data:
+                    query.data = original_data
                 await self.accept_inline_callback(update, context)
             elif kind == "join_command":
                 code = (intent.get("code") or "").strip().upper()
@@ -2659,7 +2903,10 @@ class GameHandlers:
                 return
 
             if pending_capture and pending_capture.get("must_continue"):
-                legal_moves = engine.get_legal_single_hop_moves(pending_pos=from_pos)
+                legal_moves = engine.get_legal_single_hop_moves(
+                    pending_pos=from_pos,
+                    captured_so_far=pending_capture.get("captured"),
+                )
             else:
                 legal_moves = [m for m in engine.get_legal_single_hop_moves() if m.from_pos == from_pos]
 
@@ -2769,7 +3016,10 @@ class GameHandlers:
 
             # Build legal move list consistent with capture UI (single-hop when captures exist)
             if pending_capture and pending_capture.get("must_continue"):
-                legal_moves = engine.get_legal_single_hop_moves(pending_pos=pending_capture["pos"])
+                legal_moves = engine.get_legal_single_hop_moves(
+                    pending_pos=pending_capture["pos"],
+                    captured_so_far=pending_capture.get("captured"),
+                )
                 legal_moves = [m for m in legal_moves if m.from_pos == from_pos]
             else:
                 legal_moves = engine.get_legal_single_hop_moves()
@@ -2840,12 +3090,21 @@ class GameHandlers:
             if is_promotion:
                 game_state["promotions_count"] = game_state.get("promotions_count", 0) + 1
 
-            # Check if this was a capture and if player must continue
+            # Check if this was a capture and if player must continue.
+            # Every square captured so far in THIS sequence stays on the board as a
+            # blocker (Turkish strike). apply_move cleared them to EMPTY, so the list
+            # has to be carried explicitly or the continuation search offers lines
+            # get_legal_moves already ruled out -- see engine.board_with_sequence_blockers.
             must_continue = False
+            sequence_captures = list((pending_capture or {}).get("captured") or []) + list(
+                move_to_apply.captures or []
+            )
             if move_to_apply.captures:
                 # Temporarily keep the turn with the same player to evaluate continuation
                 engine.current_turn = previous_turn
-                must_continue = engine.must_continue_capturing(move_to_apply.to_pos)
+                must_continue = engine.must_continue_capturing(
+                    move_to_apply.to_pos, captured_so_far=sequence_captures
+                )
                 if not must_continue:
                     # Restore the normal turn switch performed inside apply_move
                     engine.current_turn = BLUE if previous_turn == YELLOW else YELLOW
@@ -2886,7 +3145,9 @@ class GameHandlers:
                     # Set pending capture - turn does NOT switch
                     game_state["pending_capture"] = {
                         "pos": move_to_apply.to_pos,
-                        "must_continue": True
+                        "must_continue": True,
+                        # Blockers for the rest of the sequence; see must_continue_capturing.
+                        "captured": sequence_captures,
                     }
                     # Keep current_turn the same
                     game_state["current_turn"] = engine.current_turn
@@ -3639,7 +3900,7 @@ class GameHandlers:
         ]])
         
         await update.message.reply_text(
-            f"⚠️ Ви впевнені, що хочете скасувати гру з <b>{opponent_name}</b>?\n\n"
+            f"⚠️ Ви впевнені, що хочете скасувати гру з <b>{html.escape(str(opponent_name))}</b>?\n\n"
             "Рейтинг не буде змінено.",
             parse_mode="HTML",
             reply_markup=keyboard
@@ -3691,7 +3952,7 @@ class GameHandlers:
         ]])
         
         await update.message.reply_text(
-            f"⚠️ Ви впевнені, що хочете здатися у грі з <b>{opponent_name}</b>?\n\n"
+            f"⚠️ Ви впевнені, що хочете здатися у грі з <b>{html.escape(str(opponent_name))}</b>?\n\n"
             "⚠️ Ваш рейтинг зменшиться!",
             parse_mode="HTML",
             reply_markup=keyboard
@@ -3726,7 +3987,21 @@ class GameHandlers:
         if user.id != game_state["blue_player_id"] and user.id != game_state["yellow_player_id"]:
             await query.answer("❌ Ви не є гравцем у цій грі!", show_alert=True)
             return
-        
+
+        # The button carries no token and never expires, so re-check the same
+        # preconditions cancel_command checked when it was offered. Without
+        # this, a stale button cancels a game that is now well under way --
+        # deleting it with no rating change and no win for the opponent.
+        if game_state.get("ended"):
+            await query.answer("❌ Гра вже завершена.", show_alert=True)
+            return
+
+        if int(game_state.get("move_count", 0) or 0) > 0:
+            await query.answer(
+                "❌ Неможливо скасувати гру після першого ходу.", show_alert=True
+            )
+            return
+
         # Cancel the game
         cancel_message = "🚫 Гра скасована. Рейтинг не змінено."
         
@@ -3776,7 +4051,7 @@ class GameHandlers:
         try:
             await context.bot.send_message(
                 chat_id=opponent_id,
-                text=f"🚫 <b>{user.first_name}</b> скасував гру.",
+                text=f"🚫 <b>{html.escape(user.first_name or 'Гравець')}</b> скасував гру.",
                 parse_mode="HTML"
             )
         except Exception:
@@ -4419,7 +4694,7 @@ class GameHandlers:
         
         await update.message.reply_text(
             f"🕹️ <b>Легенду додано!</b>\n\n"
-            f"👤 Ім'я: <b>{name}</b>\n"
+            f"👤 Ім'я: <b>{html.escape(str(name))}</b>\n"
             f"📊 Рейтинг: <b>{rating}</b> ELO\n"
             f"🏆 Перемоги: {wins}\n"
             f"💀 Поразки: {losses}\n\n"
@@ -4500,7 +4775,10 @@ class GameHandlers:
         loser_name = game_state["yellow_player_name"] if winner == BLUE else game_state["blue_player_name"]
         
         board_text = BoardRenderer.render(engine.board)
-        mode = locales.normalize_mode(game_state.get("mode") or "rated")
+        # Defaulting to "rated" here contradicted every other reader of
+        # game_state["mode"] (board header, forfeit confirm, draw), which show
+        # the game as unrated. Settle it the way the players were told it was.
+        mode = locales.normalize_mode(game_state.get("mode"))
         
         # Calculate game statistics
         from datetime import datetime as dt
@@ -4689,7 +4967,7 @@ class GameHandlers:
                     win_msg += f"{ach.get('icon', '🏆')} <b>{ach.get('name_uk', 'Досягнення')}</b>\n"
                     win_msg += f"{ach.get('description_uk', '')}\n\n"
         else:
-            win_msg = locales.WINNER.format(name=winner_name)
+            win_msg = locales.WINNER.format(name=html.escape(winner_name or "Гравець"))
         
         # Save completed game for replay
         game_id = str(uuid.uuid4())[:8]
@@ -4862,7 +5140,9 @@ class GameHandlers:
         In rated mode, rating updates are applied as a draw (0.5/0.5).
         """
         board_text = BoardRenderer.render(engine.board)
-        mode = game_state.get("mode", "rated")
+        # normalize_mode maps the legacy "ranked" value to "rated"; without it a
+        # legacy game was rated on a win but silently skipped rating on a draw.
+        mode = locales.normalize_mode(game_state.get("mode"))
 
         # Game duration
         from datetime import datetime as dt
@@ -5123,7 +5403,8 @@ class GameHandlers:
         legal_moves = engine.get_legal_moves(engine.current_turn)
         # Single-hop, best-line filtered list for UX messaging.
         legal_single = engine.get_legal_single_hop_moves(
-            pending_pos=(pending_capture.get("pos") if pending_capture else None)
+            pending_pos=(pending_capture.get("pos") if pending_capture else None),
+            captured_so_far=(pending_capture.get("captured") if pending_capture else None)
         )
         capture_positions = {move.from_pos for move in legal_single if move.captures}
 
@@ -5490,4 +5771,3 @@ class GameHandlers:
                 await message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
             elif hasattr(message, "edit_message_text"):
                 await message.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
-
